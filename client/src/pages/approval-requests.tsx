@@ -9,59 +9,32 @@ import PageHeader from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { formatDate } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
+import { useQuery } from "@tanstack/react-query";
+import { Skeleton } from "@/components/ui/skeleton";
 
-// Mock data for demonstration purposes
-const approvalRequests = [
-  {
-    id: "142",
-    code: "BMI/RM/2023/142",
-    name: "محطة الإسكندرية للخرسانة",
-    approvalType: "first-time",
-    approvalTypeName: "اعتماد أول مرة",
-    requestDate: "2023-06-15",
-    distance: 120,
-    status: "pending-payment",
-  },
-  {
-    id: "141",
-    code: "BMI/RM/2023/141",
-    name: "محطة القاهرة الجديدة",
-    approvalType: "renewal",
-    approvalTypeName: "تجديد اعتماد",
-    requestDate: "2023-06-12",
-    distance: 50,
-    status: "scheduled",
-  },
-  {
-    id: "140",
-    code: "BMI/RM/2023/140",
-    name: "محطة المنصورة للخلط",
-    approvalType: "first-time",
-    approvalTypeName: "اعتماد أول مرة",
-    requestDate: "2023-06-10",
-    distance: 180,
-    status: "approved",
-  },
-  {
-    id: "139",
-    code: "BMI/RM/2023/139",
-    name: "محطة أسيوط للخرسانة",
-    approvalType: "renewal",
-    approvalTypeName: "تجديد اعتماد",
-    requestDate: "2023-06-08",
-    distance: 300,
-    status: "pending-documents",
-  },
-];
+interface ApprovalRequest {
+  id: number;
+  code: string;
+  name: string;
+  approvalType: "first-time" | "renewal";
+  requestDate: string;
+  distance: number;
+  status: "pending-payment" | "scheduled" | "visited" | "approved" | "pending-documents";
+}
 
 export default function ApprovalRequestsPage() {
   const { user } = useAuth();
-  const [isLoading] = useState(false);
   const [filters, setFilters] = useState({
     status: "",
     type: "",
     date: "",
     search: "",
+  });
+  
+  // Fetch approval requests data
+  const { data: approvalRequests = [], isLoading } = useQuery<ApprovalRequest[]>({
+    queryKey: ["/api/stations"],
+    enabled: user?.role === "admin" || user?.role === "secretary" || user?.role === "engineer",
   });
   
   // Only admin, secretary, and engineer can access this page
@@ -218,11 +191,11 @@ export default function ApprovalRequestsPage() {
                           </Link>
                         </td>
                         <td className="py-3 px-4">{request.name}</td>
-                        <td className="py-3 px-4">{request.approvalTypeName}</td>
+                        <td className="py-3 px-4">{request.approvalType === "first-time" ? "اعتماد أول مرة" : "تجديد اعتماد"}</td>
                         <td className="py-3 px-4">{formatDate(request.requestDate)}</td>
                         <td className="py-3 px-4">{request.distance}</td>
                         <td className="py-3 px-4">
-                          <StatusBadge status={request.status as any} />
+                          <StatusBadge status={request.status} />
                         </td>
                         <td className="py-3 px-4">
                           <div className="flex space-x-2 space-x-reverse">

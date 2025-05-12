@@ -1,9 +1,9 @@
-import { pgTable, text, serial, integer, boolean, timestamp, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, jsonb, uniqueIndex, decimal } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
 // User role type
-export type UserRole = "admin" | "secretary" | "engineer" | "client";
+export type UserRole = "admin" | "secretary" | "engineer" | "client" | "chairman";
 
 // User model
 export const users = pgTable("users", {
@@ -11,7 +11,7 @@ export const users = pgTable("users", {
   username: text("username").notNull().unique(),
   password: text("password").notNull(),
   name: text("name").notNull(),
-  role: text("role", { enum: ["admin", "secretary", "engineer", "client"] }).notNull(),
+  role: text("role", { enum: ["admin", "secretary", "engineer", "client", "chairman"] }).notNull(),
   email: text("email"),
   phone: text("phone"),
   active: boolean("active").default(true).notNull(),
@@ -34,7 +34,9 @@ export type User = typeof users.$inferSelect;
 // Station status type
 export type StationStatus = 
   | "pending-payment" 
-  | "scheduled" 
+  | "payment-confirmed" // بعد تأكيد الدفع مباشرة
+  | "committee-assigned" // بعد تعيين اللجنة
+  | "scheduled" // بعد تحديد موعد الزيارة
   | "visited" 
   | "approved" 
   | "pending-documents";
@@ -65,7 +67,7 @@ export const stations = pgTable("stations", {
   approvalType: text("approval_type", { enum: ["first-time", "renewal"] }).notNull(),
   certificateExpiryDate: timestamp("certificate_expiry_date"),
   mixersCount: integer("mixers_count").notNull(),
-  maxCapacity: integer("max_capacity").notNull(),
+  maxCapacity: decimal("max_capacity", { precision: 4, scale: 2 }).notNull(),
   mixingType: text("mixing_type", { enum: ["normal", "dry"] }).notNull(),
   reportLanguage: text("report_language", { enum: ["arabic", "english", "both"] }).notNull(),
   representativeName: text("representative_name").notNull(),
@@ -75,7 +77,7 @@ export const stations = pgTable("stations", {
   qualityManagerPhone: text("quality_manager_phone").notNull(),
   accommodation: text("accommodation", { enum: ["station", "center"] }),
   status: text("status", { 
-    enum: ["pending-payment", "scheduled", "visited", "approved", "pending-documents"] 
+    enum: ["pending-payment", "payment-confirmed", "committee-assigned", "scheduled", "visited", "approved", "pending-documents"] 
   }).notNull().default("pending-payment"),
   fees: integer("fees").notNull(),
   requestDate: timestamp("request_date").defaultNow().notNull(),
@@ -84,15 +86,24 @@ export const stations = pgTable("stations", {
   createdBy: integer("created_by").notNull().references(() => users.id),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  paymentReference: text("payment_reference"),
+  paymentDate: timestamp("payment_date"),
+  paymentProof: text("payment_proof"),
+  committee: jsonb("committee").$type<Array<{ id: number; name: string; role: string }>>(),
 });
 
-export const insertStationSchema = createInsertSchema(stations).omit({
+export const insertStationSchema = createInsertSchema(stations, {
+  maxCapacity: z.union([
+    z.number(),
+    z.string().transform((val) => parseFloat(val))
+  ]).transform((val) => val.toString()),
+}).omit({
   id: true,
   code: true, // Auto-generated
   status: true, // Default value
   requestDate: true, // Default value
-  createdAt: true,
-  updatedAt: true,
+  createdAt: true, // Default value
+  updatedAt: true, // Default value
 });
 
 export type InsertStation = z.infer<typeof insertStationSchema>;
@@ -151,7 +162,15 @@ export const visits = pgTable("visits", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-export const insertVisitSchema = createInsertSchema(visits).omit({
+export const insertVisitSchema = createInsertSchema(visits, {
+  visitDate: z.preprocess(
+    (arg) => {
+      if (typeof arg === "string" || arg instanceof Date) return new Date(arg);
+      return arg;
+    },
+    z.date()
+  ),
+}).omit({
   id: true,
   createdAt: true,
   updatedAt: true,
@@ -177,3 +196,27 @@ export const insertSettingsSchema = createInsertSchema(settings).omit({
 
 export type InsertSettings = z.infer<typeof insertSettingsSchema>;
 export type Settings = typeof settings.$inferSelect;
+
+// Approval Types model
+export const approvalTypes = pgTable("approval_types", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertApprovalTypeSchema = createInsertSchema(approvalTypes).pick({ name: true });
+export type InsertApprovalType = z.infer<typeof insertApprovalTypeSchema>;
+export type ApprovalTypeModel = typeof approvalTypes.$inferSelect;
+
+// Mixing Types model
+export const mixingTypes = pgTable("mixing_types", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull().unique(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertMixingTypeSchema = createInsertSchema(mixingTypes).pick({ name: true });
+export type InsertMixingType = z.infer<typeof insertMixingTypeSchema>;
+export type MixingTypeModel = typeof mixingTypes.$inferSelect;

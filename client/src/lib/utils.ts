@@ -44,7 +44,9 @@ export const accommodationTypeNames: Record<AccommodationType, string> = {
 };
 
 export type StationStatus = 
-  | "pending-payment" 
+  | "pending-payment"
+  | "payment-confirmed"
+  | "committee-assigned"
   | "scheduled" 
   | "visited" 
   | "approved" 
@@ -52,6 +54,8 @@ export type StationStatus =
 
 export const stationStatusNames: Record<StationStatus, string> = {
   "pending-payment": "بانتظار الدفع",
+  "payment-confirmed": "تم الموافقة على الطلب",
+  "committee-assigned": "تم تعيين اللجنة",
   "scheduled": "تمت جدولة الزيارة",
   "visited": "تمت الزيارة",
   "approved": "معتمد",
@@ -60,6 +64,8 @@ export const stationStatusNames: Record<StationStatus, string> = {
 
 export const stationStatusColors: Record<StationStatus, string> = {
   "pending-payment": "warning",
+  "payment-confirmed": "info",
+  "committee-assigned": "primary",
   "scheduled": "primary",
   "visited": "secondary",
   "approved": "success",

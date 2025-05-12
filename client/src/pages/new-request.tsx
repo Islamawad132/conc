@@ -144,8 +144,52 @@ export default function NewRequestPage() {
   
   const onSubmit = async (data: FormValues) => {
     try {
-      // Would normally call API here
-      console.log("Form submitted:", data);
+      // Calculate total fees
+      const accommodation = form.getValues("accommodation") as AccommodationType | undefined;
+      const calculatedFees = calculateFees(
+        data.distance,
+        data.mixersCount,
+        data.reportLanguage,
+        accommodation || null
+      );
+
+      // Make API call to create new station
+      const response = await fetch('/api/stations', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          name: data.stationName,
+          owner: data.owner,
+          taxNumber: data.taxNumber,
+          address: data.address,
+          cityDistrict: data.cityDistrict,
+          location: data.latitude && data.longitude ? `${data.latitude},${data.longitude}` : undefined,
+          distance: data.distance,
+          approvalType: data.approvalType,
+          certificateExpiryDate: data.certificateExpiryDate,
+          mixersCount: data.mixersCount,
+          maxCapacity: data.maxCapacity.toString(),
+          mixingType: data.mixingType,
+          reportLanguage: data.reportLanguage,
+          representativeName: data.representativeName,
+          representativePhone: data.representativePhone,
+          representativeId: data.representativeId,
+          qualityManagerName: data.qualityManagerName,
+          qualityManagerPhone: data.qualityManagerPhone,
+          accommodation: data.accommodation,
+          fees: Math.round(calculatedFees.totalCost),
+          createdBy: user?.id,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.message || 'Failed to create station');
+      }
+
+      const station = await response.json();
       
       toast({
         title: "تم تقديم الطلب بنجاح",
@@ -166,7 +210,7 @@ export default function NewRequestPage() {
       console.error("Error submitting form:", error);
       toast({
         title: "حدث خطأ",
-        description: "لم يتم تقديم الطلب بنجاح، يرجى المحاولة مرة أخرى",
+        description: error instanceof Error ? error.message : "لم يتم تقديم الطلب بنجاح، يرجى المحاولة مرة أخرى",
         variant: "destructive",
       });
     }

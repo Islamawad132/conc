@@ -1,16 +1,19 @@
 import { 
   users, stations, payments, visits, settings, 
+  approvalTypes, mixingTypes,
   User, InsertUser, 
   Station, InsertStation,
   Payment, InsertPayment,
   Visit, InsertVisit,
-  Settings, InsertSettings
+  Settings, InsertSettings,
+  ApprovalTypeModel, InsertApprovalType,
+  MixingTypeModel, InsertMixingType
 } from "@shared/schema";
 import session from "express-session";
 import { generateStationCode } from "@/lib/utils";
 import connectPg from "connect-pg-simple";
 import { db, pool } from "./db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 
 const PostgresSessionStore = connectPg(session);
 
@@ -38,6 +41,7 @@ export interface IStorage {
   updatePayment(id: number, payment: Partial<Payment>): Promise<Payment | undefined>;
   deletePayment(id: number): Promise<boolean>;
   listPaymentsByStation(stationId: number): Promise<Payment[]>;
+  listPayments(): Promise<Payment[]>;
   
   // Visit operations
   getVisit(id: number): Promise<Visit | undefined>;
@@ -45,10 +49,21 @@ export interface IStorage {
   updateVisit(id: number, visit: Partial<Visit>): Promise<Visit | undefined>;
   deleteVisit(id: number): Promise<boolean>;
   listVisitsByStation(stationId: number): Promise<Visit[]>;
+  listVisits(): Promise<Visit[]>;
   
   // Settings operations
   getSetting(key: string): Promise<Settings | undefined>;
   setSetting(setting: InsertSettings): Promise<Settings>;
+  
+  // Approval types
+  listApprovalTypes(): Promise<any[]>;
+  createApprovalType(type: InsertApprovalType): Promise<ApprovalTypeModel>;
+  deleteApprovalType(id: number): Promise<boolean>;
+  
+  // Mixing types
+  listMixingTypes(): Promise<any[]>;
+  createMixingType(type: InsertMixingType): Promise<MixingTypeModel>;
+  deleteMixingType(id: number): Promise<boolean>;
   
   // Session store
   sessionStore: session.Store;
@@ -61,20 +76,6 @@ export class DatabaseStorage implements IStorage {
     this.sessionStore = new PostgresSessionStore({ 
       pool, 
       createTableIfMissing: true 
-    });
-    
-    // Create default admin user if it doesn't exist
-    this.getUserByUsername("admin").then(user => {
-      if (!user) {
-        this.createUser({
-          username: "admin",
-          password: "admin", // Will be hashed in the auth middleware
-          name: "مسؤول النظام",
-          role: "admin",
-          email: "admin@example.com",
-          phone: "01234567890",
-        });
-      }
     });
   }
   
@@ -145,36 +146,75 @@ export class DatabaseStorage implements IStorage {
     const year = now.getFullYear();
     
     // Get the last ID to generate a code
-    const lastStations = await db.select().from(stations).orderBy(stations.id).limit(1);
-    const lastId = lastStations.length > 0 ? lastStations[0].id + 1 : 1;
+    let lastStations = await db.select().from(stations).orderBy(stations.id).limit(1);
+    let serial = lastStations.length > 0 ? lastStations[0].id + 1 : 1;
+    let code = generateStationCode(year, serial);
+    // Ensure code uniqueness
+    while ((await db.select().from(stations).where(eq(stations.code, code))).length > 0) {
+      serial++;
+      code = generateStationCode(year, serial);
+    }
     
-    // Generate station code
-    const code = generateStationCode(year, lastId);
+    // Build the values object, only including fields that are in the schema
+    const {
+      name, owner, taxNumber, address, cityDistrict, location, distance,
+      approvalType, certificateExpiryDate, mixersCount, maxCapacity, mixingType,
+      reportLanguage, representativeName, representativePhone, representativeId,
+      qualityManagerName, qualityManagerPhone, accommodation, fees, paymentReference,
+      paymentDate, paymentProof, committee, createdBy
+    } = insertStation;
+    
+    // Only include committee if it's an array or null, not undefined
+    const values: any = {
+      name, owner, taxNumber, address, cityDistrict, location, distance,
+      approvalType, certificateExpiryDate, mixersCount, maxCapacity: parseFloat(maxCapacity.toString()), mixingType,
+      reportLanguage, representativeName, representativePhone, representativeId,
+      qualityManagerName, qualityManagerPhone, accommodation, fees, paymentReference,
+      paymentDate, paymentProof, createdBy,
+      code,
+      requestDate: now,
+      status: "pending-payment",
+      createdAt: now,
+      updatedAt: now,
+    };
+    if (typeof committee !== "undefined") {
+      values.committee = committee ? (committee as { id: number; name: string; role: string }[]) : null;
+    }
     
     const [station] = await db
       .insert(stations)
-      .values({
-        ...insertStation,
-        code,
-        requestDate: now,
-        status: "pending-payment",
-        createdAt: now,
-        updatedAt: now
-      })
+      .values(values)
       .returning();
     return station;
   }
   
-  async updateStation(id: number, stationData: Partial<Station>): Promise<Station | undefined> {
-    const [updatedStation] = await db
-      .update(stations)
-      .set({
-        ...stationData,
-        updatedAt: new Date()
-      })
-      .where(eq(stations.id, id))
-      .returning();
-    return updatedStation || undefined;
+  async updateStation(id: number, data: Partial<Station>) {
+    try {
+      // Fetch old station for logging
+      const oldStation = await this.getStation(id);
+      const { committee, ...rest } = data;
+      const updateData: Record<string, any> = {
+        ...rest,
+        updatedAt: new Date(),
+      };
+      if (committee !== undefined) {
+        // Convert committee array to JSONB format
+        updateData.committee = committee;
+      }
+      const [station] = await db
+        .update(stations)
+        .set(updateData)
+        .where(eq(stations.id, id))
+        .returning();
+      // Log status change
+      if (oldStation && data.status && oldStation.status !== data.status) {
+        console.log(`[StationStatus] Station ID: ${id} | Old: ${oldStation.status} | New: ${data.status}`);
+      }
+      return station;
+    } catch (error) {
+      console.error("Error updating station:", error);
+      throw error;
+    }
   }
   
   async deleteStation(id: number): Promise<boolean> {
@@ -218,7 +258,7 @@ export class DatabaseStorage implements IStorage {
     if (payment.status === "paid") {
       const station = await this.getStation(payment.stationId);
       if (station && station.status === "pending-payment") {
-        await this.updateStation(station.id, { status: "scheduled" });
+        await this.updateStation(station.id, { status: "payment-confirmed" });
       }
     }
     
@@ -243,7 +283,7 @@ export class DatabaseStorage implements IStorage {
     if (currentPayment.status !== "paid" && updatedPayment.status === "paid") {
       const station = await this.getStation(updatedPayment.stationId);
       if (station && station.status === "pending-payment") {
-        await this.updateStation(station.id, { status: "scheduled" });
+        await this.updateStation(station.id, { status: "payment-confirmed" });
       }
     }
     
@@ -270,6 +310,10 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(payments).where(eq(payments.stationId, stationId));
   }
   
+  async listPayments(): Promise<Payment[]> {
+    return db.select().from(payments);
+  }
+  
   // Visit operations
   async getVisit(id: number): Promise<Visit | undefined> {
     const [visit] = await db.select().from(visits).where(eq(visits.id, id));
@@ -289,7 +333,7 @@ export class DatabaseStorage implements IStorage {
     
     // Update station status
     const station = await this.getStation(visit.stationId);
-    if (station && station.status !== "approved") {
+    if (station && station.status === "committee-assigned") {
       await this.updateStation(station.id, { status: "scheduled" });
     }
     
@@ -354,6 +398,10 @@ export class DatabaseStorage implements IStorage {
     return db.select().from(visits).where(eq(visits.stationId, stationId));
   }
   
+  async listVisits(): Promise<Visit[]> {
+    return db.select().from(visits);
+  }
+  
   // Settings operations
   async getSetting(key: string): Promise<Settings | undefined> {
     const [setting] = await db.select().from(settings).where(eq(settings.key, key));
@@ -388,6 +436,33 @@ export class DatabaseStorage implements IStorage {
       })
       .returning();
     return setting;
+  }
+  
+  // Approval types
+  async listApprovalTypes() {
+    return db.select().from(approvalTypes);
+  }
+  async createApprovalType(type: InsertApprovalType): Promise<ApprovalTypeModel> {
+    const now = new Date();
+    const [row] = await db.insert(approvalTypes).values({ ...type, createdAt: now, updatedAt: now }).returning();
+    return row;
+  }
+  async deleteApprovalType(id: number): Promise<boolean> {
+    await db.delete(approvalTypes).where(eq(approvalTypes.id, id));
+    return true;
+  }
+  // Mixing types
+  async listMixingTypes() {
+    return db.select().from(mixingTypes);
+  }
+  async createMixingType(type: InsertMixingType): Promise<MixingTypeModel> {
+    const now = new Date();
+    const [row] = await db.insert(mixingTypes).values({ ...type, createdAt: now, updatedAt: now }).returning();
+    return row;
+  }
+  async deleteMixingType(id: number): Promise<boolean> {
+    await db.delete(mixingTypes).where(eq(mixingTypes.id, id));
+    return true;
   }
 }
 

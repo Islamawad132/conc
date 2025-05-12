@@ -8,54 +8,20 @@ import Sidebar from "@/components/layout/sidebar";
 import PageHeader from "@/components/layout/page-header";
 import { useAuth } from "@/hooks/use-auth";
 import { formatDate, formatCurrency } from "@/lib/utils";
+import { useQuery } from "@tanstack/react-query";
+import { Skeleton } from "@/components/ui/skeleton";
 
-// Mock data for payments
-const payments = [
-  {
-    id: "p1",
-    stationId: "142",
-    stationName: "محطة الإسكندرية للخرسانة",
-    stationCode: "BMI/RM/2023/142",
-    amount: 5800,
-    status: "paid",
-    date: "2023-06-18",
-    invoiceNumber: "INV-2023-568",
-    paymentMethod: "bank_transfer",
-  },
-  {
-    id: "p2",
-    stationId: "141",
-    stationName: "محطة القاهرة الجديدة",
-    stationCode: "BMI/RM/2023/141",
-    amount: 4200,
-    status: "paid",
-    date: "2023-06-13",
-    invoiceNumber: "INV-2023-564",
-    paymentMethod: "cash",
-  },
-  {
-    id: "p3",
-    stationId: "140",
-    stationName: "محطة المنصورة للخلط",
-    stationCode: "BMI/RM/2023/140",
-    amount: 6300,
-    status: "paid",
-    date: "2023-06-11",
-    invoiceNumber: "INV-2023-561",
-    paymentMethod: "bank_transfer",
-  },
-  {
-    id: "p4",
-    stationId: "143",
-    stationName: "محطة طنطا للخرسانة",
-    stationCode: "BMI/RM/2023/143",
-    amount: 3800,
-    status: "pending",
-    date: null,
-    invoiceNumber: null,
-    paymentMethod: null,
-  }
-];
+interface Payment {
+  id: string;
+  stationId: string;
+  stationName: string;
+  stationCode: string;
+  amount: number;
+  status: "paid" | "pending" | "cancelled";
+  date: string | null;
+  invoiceNumber: string | null;
+  paymentMethod: "bank_transfer" | "cash" | "cheque" | null;
+}
 
 const paymentStatusNames = {
   paid: "تم الدفع",
@@ -71,11 +37,16 @@ const paymentMethodNames = {
 
 export default function PaymentsPage() {
   const { user } = useAuth();
-  const [isLoading] = useState(false);
   const [filters, setFilters] = useState({
     status: "",
     date: "",
     search: "",
+  });
+  
+  // Fetch payments data
+  const { data: payments = [], isLoading } = useQuery<Payment[]>({
+    queryKey: ["/api/payments"],
+    enabled: user?.role === "admin" || user?.role === "secretary",
   });
   
   // Only admin and secretary can access this page
@@ -141,7 +112,11 @@ export default function PaymentsPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-muted-foreground text-sm">إجمالي المدفوعات</p>
-                  <h3 className="text-2xl font-bold">{formatCurrency(totalPaid)}</h3>
+                  {isLoading ? (
+                    <Skeleton className="h-8 w-32" />
+                  ) : (
+                    <h3 className="text-2xl font-bold">{formatCurrency(totalPaid)}</h3>
+                  )}
                 </div>
                 <div className="bg-success/10 p-3 rounded-full">
                   <span className="material-icons text-success">payments</span>
@@ -155,7 +130,11 @@ export default function PaymentsPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-muted-foreground text-sm">مدفوعات قيد الانتظار</p>
-                  <h3 className="text-2xl font-bold">{formatCurrency(totalPending)}</h3>
+                  {isLoading ? (
+                    <Skeleton className="h-8 w-32" />
+                  ) : (
+                    <h3 className="text-2xl font-bold">{formatCurrency(totalPending)}</h3>
+                  )}
                 </div>
                 <div className="bg-warning/10 p-3 rounded-full">
                   <span className="material-icons text-warning">pending</span>
@@ -169,7 +148,11 @@ export default function PaymentsPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-muted-foreground text-sm">إجمالي الرسوم</p>
-                  <h3 className="text-2xl font-bold">{formatCurrency(totalAmount)}</h3>
+                  {isLoading ? (
+                    <Skeleton className="h-8 w-32" />
+                  ) : (
+                    <h3 className="text-2xl font-bold">{formatCurrency(totalAmount)}</h3>
+                  )}
                 </div>
                 <div className="bg-primary/10 p-3 rounded-full">
                   <span className="material-icons text-primary">account_balance_wallet</span>

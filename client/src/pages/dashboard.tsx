@@ -79,6 +79,7 @@ interface DashboardStats {
   myStations: number;
   pendingVisitStations: number;
   expiredStations: number;
+  unapprovedStations: number;
 }
 
 // تنسيق التاريخ إلى صيغة نصية مناسبة
@@ -103,44 +104,38 @@ function formatVisitDate(dateStr: string): string {
 
 export default function DashboardPage() {
   const { user } = useAuth();
-  const [dashboardStats, setDashboardStats] = useState<DashboardStats>({
-    totalStations: 0,
-    pendingRequests: 0,
-    weekVisits: 0,
-    expiringCertificates: 0,
-    pendingPayments: 0,
-    completedVisits: 0,
-    scheduledVisits: 0,
-    approvedStations: 0,
-    myStations: 0,
-    pendingVisitStations: 0,
-    expiredStations: 0,
-  });
   
   // استعلام عن الإحصائيات
-  const { data: statsData, isLoading: statsLoading } = useQuery({
-    queryKey: ["/api/dashboard/stats"],
-    enabled: user?.role === "admin" || user?.role === "secretary" || user?.role === "engineer" || user?.role === "client",
+  const { data: statsData, isLoading: statsLoading } = useQuery<DashboardStats>({
+    queryKey: ["/api/stations/stats"],
+    enabled: !!user,
   });
   
   // استعلام عن أحدث المحطات
-  const { data: stationsData, isLoading: stationsLoading } = useQuery({
-    queryKey: ["/api/dashboard/recent-stations"],
-    enabled: user?.role === "admin" || user?.role === "secretary",
+  const { data: stationsData, isLoading: stationsLoading } = useQuery<Station[]>({
+    queryKey: ["/api/stations"],
+    enabled: !!user && (user.role === "admin" || user.role === "secretary"),
   });
   
   // استعلام عن الزيارات القادمة
-  const { data: visitsData, isLoading: visitsLoading } = useQuery({
-    queryKey: ["/api/dashboard/upcoming-visits"],
-    enabled: user?.role === "admin" || user?.role === "secretary" || user?.role === "engineer",
+  const { data: visitsData, isLoading: visitsLoading } = useQuery<Visit[]>({
+    queryKey: ["/api/visits"],
+    enabled: !!user && (user.role === "admin" || user.role === "secretary" || user.role === "engineer"),
   });
   
-  // تحديث الإحصائيات عند تغير البيانات
-  useEffect(() => {
-    if (statsData) {
-      setDashboardStats(statsData);
-    }
-  }, [statsData]);
+  // محطات المستخدم إذا كان عميل
+  const { data: userStationsData } = useQuery<Station[]>({
+    queryKey: ["/api/stations"],
+    enabled: !!user && user.role === "client",
+  });
+  
+  // تحويل بيانات محطات المستخدم إلى التنسيق المطلوب
+  const userStations = userStationsData?.map(station => ({
+    title: station.name,
+    href: `/station/${station.id}`,
+    icon: "business",
+    description: `كود المحطة: ${station.code}`,
+  })) || [];
   
   // إذا لم يكن المستخدم من الأدوار المحددة، فلا يسمح له بالوصول
   if (user?.role !== "admin" && user?.role !== "secretary" && user?.role !== "engineer" && user?.role !== "client") {
@@ -162,14 +157,6 @@ export default function DashboardPage() {
   // الإحصائيات المناسبة لدور المستخدم
   const userRoleStats = statsByRole[user.role as UserRole] || statsByRole.client;
   
-  // محطات المستخدم إذا كان عميل
-  const userStations = user?.role === "client" ? [
-    { title: "محطاتي", href: "/stations", icon: "list", description: "عرض جميع محطاتك" },
-    { title: "طلب جديد", href: "/new-request", icon: "add_circle", description: "إنشاء طلب اعتماد جديد" },
-    { title: "جدول الزيارات", href: "/visit-schedule", icon: "event", description: "عرض جدول الزيارات القادمة" },
-    { title: "المدفوعات", href: "/payments", icon: "payments", description: "إدارة المدفوعات الخاصة بك" },
-  ] : [];
-  
   return (
     <div className="min-h-screen flex flex-col md:flex-row">
       <Sidebar />
@@ -180,9 +167,51 @@ export default function DashboardPage() {
           description="نظرة عامة على محطات الخلط والمهام"
         />
         
+        {/* الكاردات الجديدة: إجمالي المحطات، المعتمدة، غير المعتمدة */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <Card className="shadow">
+            <CardContent className="p-4 flex items-center justify-between">
+              <div>
+                <p className="text-muted-foreground text-sm">إجمالي المحطات</p>
+                {statsLoading ? (
+                  <Skeleton className="h-8 w-16" />
+                ) : (
+                  <h3 className="text-2xl font-bold">{statsData?.totalStations ?? 0}</h3>
+                )}
+              </div>
+              <span className="material-icons text-primary text-3xl">business</span>
+            </CardContent>
+          </Card>
+          <Card className="shadow">
+            <CardContent className="p-4 flex items-center justify-between">
+              <div>
+                <p className="text-muted-foreground text-sm">إجمالي المحطات المعتمدة</p>
+                {statsLoading ? (
+                  <Skeleton className="h-8 w-16" />
+                ) : (
+                  <h3 className="text-2xl font-bold">{statsData?.approvedStations ?? 0}</h3>
+                )}
+              </div>
+              <span className="material-icons text-success text-3xl">verified</span>
+            </CardContent>
+          </Card>
+          <Card className="shadow">
+            <CardContent className="p-4 flex items-center justify-between">
+              <div>
+                <p className="text-muted-foreground text-sm">إجمالي المحطات غير المعتمدة</p>
+                {statsLoading ? (
+                  <Skeleton className="h-8 w-16" />
+                ) : (
+                  <h3 className="text-2xl font-bold">{statsData?.unapprovedStations ?? 0}</h3>
+                )}
+              </div>
+              <span className="material-icons text-destructive text-3xl">block</span>
+            </CardContent>
+          </Card>
+        </div>
         {/* الإحصائيات العامة */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          {userRoleStats.map((stat, index) => (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+          {userRoleStats.filter(stat => stat.dataKey !== "totalStations").map((stat, index) => (
             <Card key={index} className="shadow">
               <CardContent className="p-4">
                 <div className="flex items-center justify-between">
@@ -191,7 +220,7 @@ export default function DashboardPage() {
                     {statsLoading ? (
                       <Skeleton className="h-8 w-16" />
                     ) : (
-                      <h3 className="text-2xl font-bold">{dashboardStats[stat.dataKey as keyof DashboardStats]}</h3>
+                      <h3 className="text-2xl font-bold">{statsData?.[stat.dataKey as keyof DashboardStats] || 0}</h3>
                     )}
                   </div>
                   <div className={`bg-${stat.color}/10 p-3 rounded-full`}>
@@ -259,7 +288,7 @@ export default function DashboardPage() {
                             </tr>
                           ))
                         ) : stationsData && stationsData.length > 0 ? (
-                          stationsData.map((station: Station) => (
+                          stationsData.slice(0, 5).map((station: Station) => (
                             <tr key={station.id} className="border-b hover:bg-muted/50 transition-colors">
                               <td className="py-2 px-4">
                                 <Link href={`/station/${station.id}`} className="text-primary hover:underline">
@@ -309,7 +338,7 @@ export default function DashboardPage() {
                     </div>
                   ) : visitsData && visitsData.length > 0 ? (
                     <ul className="space-y-4">
-                      {visitsData.map((visit: Visit) => (
+                      {visitsData.slice(0, 5).map((visit: Visit) => (
                         <li key={visit.id} className="border-r-4 border-primary-light pr-4">
                           <p className="text-muted-foreground text-xs">{formatVisitDate(visit.scheduledDate)}</p>
                           <p className="font-medium">{visit.stationName}</p>

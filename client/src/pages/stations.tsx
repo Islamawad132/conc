@@ -9,78 +9,43 @@ import PageHeader from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { formatDate } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
+import { useQuery } from "@tanstack/react-query";
+import { Skeleton } from "@/components/ui/skeleton";
 
-// Mock data for stations
-const stations = [
-  {
-    id: "142",
-    code: "BMI/RM/2023/142",
-    name: "محطة الإسكندرية للخرسانة",
-    location: "الإسكندرية",
-    owner: "شركة الإنشاءات المصرية",
-    mixersCount: 2,
-    status: "scheduled",
-    expiryDate: "2024-06-15",
-  },
-  {
-    id: "141",
-    code: "BMI/RM/2023/141",
-    name: "محطة القاهرة الجديدة",
-    location: "القاهرة الجديدة",
-    owner: "شركة الإسكان والتعمير",
-    mixersCount: 3,
-    status: "approved",
-    expiryDate: "2024-06-12",
-  },
-  {
-    id: "140",
-    code: "BMI/RM/2023/140",
-    name: "محطة المنصورة للخلط",
-    location: "المنصورة",
-    owner: "شركة دلتا للإنشاءات",
-    mixersCount: 2,
-    status: "approved",
-    expiryDate: "2024-06-10",
-  },
-  {
-    id: "139",
-    code: "BMI/RM/2023/139",
-    name: "محطة أسيوط للخرسانة",
-    location: "أسيوط",
-    owner: "الشركة المصرية للخرسانة",
-    mixersCount: 1,
-    status: "pending-documents",
-    expiryDate: null,
-  },
-  {
-    id: "138",
-    code: "BMI/RM/2023/138",
-    name: "محطة الغردقة للخلط",
-    location: "الغردقة",
-    owner: "شركة البحر الأحمر للإنشاءات",
-    mixersCount: 2,
-    status: "approved",
-    expiryDate: "2023-09-05",
-  },
-  {
-    id: "137",
-    code: "BMI/RM/2023/137",
-    name: "محطة طنطا للخرسانة",
-    location: "طنطا",
-    owner: "شركة الدلتا للإنشاءات",
-    mixersCount: 1,
-    status: "approved",
-    expiryDate: "2023-08-20",
-  }
-];
+interface Station {
+  id: number;
+  code: string;
+  name: string;
+  location: string;
+  owner: string;
+  mixersCount: number;
+  status: "pending-payment" | "scheduled" | "visited" | "approved" | "pending-documents";
+  approvalEndDate: string | null;
+  distance: number;
+}
 
 export default function StationsPage() {
   const { user } = useAuth();
-  const [isLoading] = useState(false);
   const [filters, setFilters] = useState({
     status: "",
     location: "",
     search: "",
+  });
+  
+  // Fetch stations data
+  const { data: stations = [], isLoading } = useQuery<Station[]>({
+    queryKey: ["/api/stations"],
+    enabled: user?.role === "admin" || user?.role === "secretary" || user?.role === "client",
+  });
+  
+  // Fetch station statistics
+  const { data: statsData, isLoading: statsLoading } = useQuery<{
+    totalStations: number;
+    approvedStations: number;
+    unapprovedStations: number;
+  }>({
+    queryKey: ["/api/stations/stats"],
+    enabled: user?.role === "admin" || user?.role === "secretary" || user?.role === "client",
   });
   
   // Allow admin, secretary, and client roles to access stations
@@ -101,7 +66,7 @@ export default function StationsPage() {
     );
   }
   
-  // For client role, filter to only show their stations (assuming station.owner would be client's company name)
+  // For client role, filter to only show their stations
   const filteredStations = user?.role === "client" 
     ? stations.filter(station => station.owner === user.name)
     : stations;
@@ -129,8 +94,8 @@ export default function StationsPage() {
   thirtyDaysLater.setDate(today.getDate() + 30);
   
   const expiringSoonCount = stations.filter(station => {
-    if (!station.expiryDate) return false;
-    const expiryDate = new Date(station.expiryDate);
+    if (!station.approvalEndDate) return false;
+    const expiryDate = new Date(station.approvalEndDate);
     return expiryDate >= today && expiryDate <= thirtyDaysLater;
   }).length;
   
@@ -161,7 +126,11 @@ export default function StationsPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-muted-foreground text-sm">إجمالي المحطات</p>
-                  <h3 className="text-2xl font-bold">{filteredStations.length}</h3>
+                  {statsLoading ? (
+                    <Skeleton className="h-8 w-16" />
+                  ) : (
+                    <h3 className="text-2xl font-bold">{statsData?.totalStations ?? 0}</h3>
+                  )}
                 </div>
                 <div className="bg-primary/10 p-3 rounded-full">
                   <span className="material-icons text-primary">business</span>
@@ -175,9 +144,11 @@ export default function StationsPage() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-muted-foreground text-sm">محطات معتمدة</p>
-                  <h3 className="text-2xl font-bold">
-                    {filteredStations.filter(s => s.status === "approved").length}
-                  </h3>
+                  {statsLoading ? (
+                    <Skeleton className="h-8 w-16" />
+                  ) : (
+                    <h3 className="text-2xl font-bold">{statsData?.approvedStations ?? 0}</h3>
+                  )}
                 </div>
                 <div className="bg-success/10 p-3 rounded-full">
                   <span className="material-icons text-success">verified</span>
@@ -190,8 +161,12 @@ export default function StationsPage() {
             <CardContent className="p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-muted-foreground text-sm">شهادات تنتهي قريباً</p>
-                  <h3 className="text-2xl font-bold">{expiringSoonCount}</h3>
+                  <p className="text-muted-foreground text-sm">محطات غير معتمدة</p>
+                  {statsLoading ? (
+                    <Skeleton className="h-8 w-16" />
+                  ) : (
+                    <h3 className="text-2xl font-bold">{statsData?.unapprovedStations ?? 0}</h3>
+                  )}
                 </div>
                 <div className="bg-warning/10 p-3 rounded-full">
                   <span className="material-icons text-warning">warning</span>
@@ -284,7 +259,7 @@ export default function StationsPage() {
                             {station.name}
                           </h3>
                         </Link>
-                        <StatusBadge status={station.status as any} />
+                        <StatusBadge status={station.status} />
                       </div>
                       
                       <p className="text-sm text-muted-foreground mb-4">
@@ -304,10 +279,10 @@ export default function StationsPage() {
                           <span className="material-icons text-primary text-sm ml-2">category</span>
                           <span>عدد الخلاطات: {station.mixersCount}</span>
                         </div>
-                        {station.expiryDate && (
+                        {station.approvalEndDate && (
                           <div className="flex items-center">
                             <span className="material-icons text-primary text-sm ml-2">event</span>
-                            <span>تاريخ انتهاء الشهادة: {formatDate(station.expiryDate)}</span>
+                            <span>تاريخ انتهاء الشهادة: {formatDate(station.approvalEndDate)}</span>
                           </div>
                         )}
                       </div>
@@ -335,7 +310,7 @@ export default function StationsPage() {
             {/* Pagination */}
             <div className="flex justify-between items-center mt-6">
               <div className="text-muted-foreground">
-                عرض 1-6 من 6 نتيجة
+                عرض 1-{filteredStations.length} من {filteredStations.length} نتيجة
               </div>
               <div className="flex">
                 <Button variant="outline" size="sm" disabled className="rounded-r-md">

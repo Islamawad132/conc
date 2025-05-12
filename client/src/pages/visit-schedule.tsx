@@ -1,77 +1,87 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Link } from "wouter";
 import Sidebar from "@/components/layout/sidebar";
 import PageHeader from "@/components/layout/page-header";
 import { useAuth } from "@/hooks/use-auth";
+import { useQuery } from "@tanstack/react-query";
+import { Skeleton } from "@/components/ui/skeleton";
+import { toast } from "sonner";
+import { VisitCheckItem } from "@/lib/utils";
+import { Calendar, dateFnsLocalizer } from 'react-big-calendar';
+import { format, parse, startOfWeek, getDay } from 'date-fns';
+import { arEG } from 'date-fns/locale';
+import 'react-big-calendar/lib/css/react-big-calendar.css';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
-// Mock data for demonstration purposes
-const visitSchedule = [
-  {
-    id: "v1",
-    stationId: "140",
-    stationName: "محطة المنصورة للخلط",
-    stationCode: "BMI/RM/2023/140",
-    date: "2023-06-17",
-    time: "10:00",
-    status: "today",
-    visitType: "first",
-    committee: [
-      { name: "د. عبد الرحمن محمود", role: "رئيس اللجنة" },
-      { name: "م. سمير عبد الله", role: "المهندس" },
-      { name: "أ. محمد أحمد", role: "السكرتير" },
-    ]
-  },
-  {
-    id: "v2",
-    stationId: "141",
-    stationName: "محطة القاهرة الجديدة",
-    stationCode: "BMI/RM/2023/141",
-    date: "2023-06-18",
-    time: "11:30",
-    status: "tomorrow",
-    visitType: "first",
-    committee: [
-      { name: "د. عبد الرحمن محمود", role: "رئيس اللجنة" },
-      { name: "م. سمير عبد الله", role: "المهندس" },
-      { name: "أ. محمد أحمد", role: "السكرتير" },
-    ]
-  },
-  {
-    id: "v3",
-    stationId: "142",
-    stationName: "محطة الإسكندرية للخرسانة",
-    stationCode: "BMI/RM/2023/142",
-    date: "2023-06-18",
-    time: "09:00",
-    status: "upcoming",
-    visitType: "first",
-    committee: [
-      { name: "د. سليمان عمر", role: "رئيس اللجنة" },
-      { name: "م. خالد محمود", role: "المهندس" },
-      { name: "أ. أحمد علي", role: "السكرتير" },
-    ]
-  },
-  {
-    id: "v4",
-    stationId: "139",
-    stationName: "محطة أسيوط للخرسانة",
-    stationCode: "BMI/RM/2023/139",
-    date: "2023-06-20",
-    time: "13:00",
-    status: "upcoming",
-    visitType: "second",
-    committee: [
-      { name: "د. فاطمة الزهراء", role: "رئيس اللجنة" },
-      { name: "م. مصطفى السيد", role: "المهندس" },
-      { name: "أ. عمر أحمد", role: "السكرتير" },
-    ]
-  },
-];
+interface Visit {
+  id: number;
+  stationId: number;
+  stationName: string;
+  stationCode: string;
+  visitType: "first" | "second" | "additional";
+  visitDate: string;
+  visitTime: string;
+  status: "scheduled" | "completed" | "cancelled";
+  committee: Array<{ name: string; role: string }>;
+  checks: Array<{ itemId: VisitCheckItem; status: boolean; notes: string }> | null;
+  report: string | null;
+  certificateIssued: boolean;
+  certificateUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+const locales = {
+  'ar-EG': arEG,
+};
+const localizer = dateFnsLocalizer({
+  format,
+  parse,
+  startOfWeek: () => startOfWeek(new Date(), { weekStartsOn: 6 }), // السبت
+  getDay,
+  locales,
+});
 
 export default function VisitSchedulePage() {
   const { user } = useAuth();
-  const [isLoading] = useState(false);
+  const [visits, setVisits] = useState<Visit[]>([]);
+  const [selectedVisit, setSelectedVisit] = useState<Visit | null>(null);
+  const [modalVisit, setModalVisit] = useState<Visit | null>(null);
+  
+  // Fetch visit schedule data
+  const { data: visitSchedule = [], isLoading } = useQuery<Visit[]>({
+    queryKey: ["/api/visits"],
+    enabled: user?.role === "admin" || user?.role === "secretary" || user?.role === "engineer",
+  });
+  
+  useEffect(() => {
+    fetchVisits();
+  }, []);
+
+  useEffect(() => {
+    console.log('visits:', visits);
+  }, [visits]);
+
+  const fetchVisits = async () => {
+    try {
+      const response = await fetch("/api/visits");
+      if (!response.ok) {
+        throw new Error("Failed to fetch visits");
+      }
+      const data = await response.json();
+      setVisits(data);
+    } catch (error) {
+      console.error("Error fetching visits:", error);
+      toast.error("حدث خطأ أثناء جلب بيانات الزيارات");
+    }
+  };
+
+  const handleChecksComplete = async (checks: Array<{ itemId: VisitCheckItem; status: boolean; notes: string }>) => {
+    // Refresh visits after checks are completed
+    await fetchVisits();
+    setSelectedVisit(null);
+  };
   
   // Only admin, secretary, and engineer can access this page
   if (user?.role !== "admin" && user?.role !== "secretary" && user?.role !== "engineer") {
@@ -90,6 +100,30 @@ export default function VisitSchedulePage() {
     );
   }
   
+  // تحويل الزيارات إلى أحداث الكالندر مع معالجة التاريخ والوقت بشكل صحيح
+  let events: Array<{
+    id: number;
+    title: string;
+    start: Date;
+    end: Date;
+    resource: Visit;
+  }> = visits.map((visit: Visit) => {
+    const start = new Date(visit.visitDate);
+    const end = new Date(visit.visitDate);
+    return {
+      id: visit.id,
+      title: `${visit.stationName} (${visit.visitType === 'first' ? 'الزيارة الأولى' : visit.visitType === 'second' ? 'الزيارة الثانية' : 'زيارة إضافية'})`,
+      start,
+      end,
+      resource: visit,
+    };
+  });
+
+  useEffect(() => {
+    console.log('events:', events);
+    events.forEach(e => console.log(e.title, e.start, e.end));
+  }, [events]);
+
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr);
     return date.toLocaleDateString("ar-EG");
@@ -105,12 +139,12 @@ export default function VisitSchedulePage() {
   
   const getStatusDisplay = (status: string) => {
     switch(status) {
-      case 'today':
-        return 'اليوم';
-      case 'tomorrow':
-        return 'غداً';
-      case 'upcoming':
-        return formatDate(visitSchedule.find(v => v.status === status)?.date || '');
+      case 'scheduled':
+        return 'مجدول';
+      case 'completed':
+        return 'مكتمل';
+      case 'cancelled':
+        return 'ملغي';
       default:
         return status;
     }
@@ -128,19 +162,15 @@ export default function VisitSchedulePage() {
         return type;
     }
   };
-  
-  // Group visits by date status (today, tomorrow, upcoming)
-  const groupedVisits = visitSchedule.reduce((acc, visit) => {
-    if (!acc[visit.status]) {
-      acc[visit.status] = [];
-    }
-    acc[visit.status].push(visit);
-    return acc;
-  }, {} as Record<string, typeof visitSchedule>);
-  
-  // Order: today, tomorrow, upcoming
-  const orderedKeys = ['today', 'tomorrow', 'upcoming'];
-  
+
+  const isTodayOrPast = (dateStr: string) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const date = new Date(dateStr);
+    date.setHours(0, 0, 0, 0);
+    return date <= today;
+  };
+
   return (
     <div className="min-h-screen flex flex-col md:flex-row">
       <Sidebar />
@@ -148,74 +178,92 @@ export default function VisitSchedulePage() {
       <main className="flex-grow p-6 overflow-auto">
         <PageHeader 
           title="جدول الزيارات" 
-          description="عرض وإدارة جدول زيارات محطات الخلط"
+          description="عرض زيارات محطات الخلط في شكل تقويم"
         />
         
         {isLoading ? (
           <div className="flex justify-center p-8">
-            <p>جاري تحميل البيانات...</p>
+            <Skeleton className="h-8 w-32" />
           </div>
         ) : (
-          <div className="space-y-6">
-            {orderedKeys.map(statusKey => 
-              groupedVisits[statusKey] && (
-                <div key={statusKey}>
-                  <h2 className="text-xl font-heading font-bold mb-4">
-                    {getStatusDisplay(statusKey)}
-                  </h2>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {groupedVisits[statusKey].map(visit => (
-                      <Card key={visit.id} className="shadow">
-                        <CardContent className="p-4">
-                          <div className="flex justify-between items-start mb-2">
-                            <Link href={`/station/${visit.stationId}`}>
-                              <h3 className="font-heading font-bold text-lg text-primary hover:underline cursor-pointer">
-                                {visit.stationName}
-                              </h3>
-                            </Link>
-                            <span className="px-2 py-1 bg-primary/10 text-primary rounded-full text-xs">
-                              {getVisitTypeDisplay(visit.visitType)}
-                            </span>
-                          </div>
-                          
-                          <p className="text-sm text-muted-foreground mb-4">
-                            كود المحطة: {visit.stationCode}
-                          </p>
-                          
-                          <div className="flex items-center mb-4">
-                            <span className="material-icons text-sm text-primary ml-1">schedule</span>
-                            <span className="text-sm">{formatTime(visit.time)}</span>
-                          </div>
-                          
-                          <div className="border-t pt-3 mt-2">
-                            <p className="text-sm font-medium mb-2">اللجنة المسؤولة:</p>
-                            <ul className="space-y-1 text-sm">
-                              {visit.committee.map((member, idx) => (
-                                <li key={idx}>
-                                  <span className="font-medium">{member.name}</span>
-                                  <span className="text-muted-foreground"> - {member.role}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
-                  </div>
-                </div>
-              )
-            )}
-            
-            {Object.keys(groupedVisits).length === 0 && (
-              <Card>
-                <CardContent className="p-8 text-center">
-                  <p className="text-muted-foreground">لا توجد زيارات مجدولة</p>
-                </CardContent>
-              </Card>
-            )}
+          <div className="bg-white rounded shadow p-4">
+            <Calendar
+              localizer={localizer}
+              events={events}
+              startAccessor="start"
+              endAccessor="end"
+              style={{ height: 600, fontFamily: 'Cairo, Tahoma, Arial, sans-serif', direction: 'rtl', background: '#f9fafb', borderRadius: '12px', boxShadow: '0 2px 8px #0001' }}
+              popup
+              messages={{
+                next: 'التالي',
+                previous: 'السابق',
+                today: 'اليوم',
+                month: 'شهر',
+                week: 'أسبوع',
+                day: 'يوم',
+                agenda: 'جدول',
+                date: 'التاريخ',
+                time: 'الوقت',
+                event: 'الزيارة',
+                showMore: (total: number) => `+${total} زيارات أخرى`,
+              }}
+              onSelectEvent={(event: { resource: Visit }) => setModalVisit(event.resource)}
+              culture="ar-EG"
+              eventPropGetter={(): { style: React.CSSProperties } => ({
+                style: {
+                  backgroundColor: '#2563eb',
+                  color: 'white',
+                  borderRadius: '8px',
+                  border: 'none',
+                  fontWeight: 'bold',
+                  fontSize: '1rem',
+                  padding: '4px 8px',
+                  textAlign: 'right',
+                  direction: 'rtl',
+                  boxShadow: '0 1px 4px #0002',
+                }
+              })}
+            />
           </div>
         )}
+        {/* Modal لعرض تفاصيل الزيارة */}
+        <Dialog open={!!modalVisit} onOpenChange={() => setModalVisit(null)}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>تفاصيل الزيارة</DialogTitle>
+            </DialogHeader>
+            {modalVisit && (
+              <div className="space-y-3">
+                <div>
+                  <span className="font-bold">المحطة:</span> {modalVisit.stationName}
+                </div>
+                <div>
+                  <span className="font-bold">الكود:</span> {modalVisit.stationCode}
+                </div>
+                <div>
+                  <span className="font-bold">نوع الزيارة:</span> {getVisitTypeDisplay(modalVisit.visitType)}
+                </div>
+                <div>
+                  <span className="font-bold">التاريخ:</span> {formatDate(modalVisit.visitDate)}
+                </div>
+                <div>
+                  <span className="font-bold">الوقت:</span> {formatTime(modalVisit.visitTime)}
+                </div>
+                <div>
+                  <span className="font-bold">الحالة:</span> {getStatusDisplay(modalVisit.status)}
+                </div>
+                <div>
+                  <span className="font-bold">اللجنة:</span>
+                  <ul className="list-disc pl-4">
+                    {modalVisit.committee.map((member, idx) => (
+                      <li key={idx}>{member.name} - {member.role}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
       </main>
     </div>
   );

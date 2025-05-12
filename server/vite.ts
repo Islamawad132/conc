@@ -5,53 +5,37 @@ import { createServer as createViteServer, createLogger } from "vite";
 import { type Server } from "http";
 import viteConfig from "../vite.config";
 import { nanoid } from "nanoid";
+import { fileURLToPath } from "url";
+import { dirname, resolve } from "path";
+import { createServer as createHttpServer } from "http";
 
 const viteLogger = createLogger();
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
-export function log(message: string, source = "express") {
-  const formattedTime = new Date().toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-  });
+export const log = (message: string) => {
+  console.log(`[${new Date().toISOString()}] ${message}`);
+};
 
-  console.log(`${formattedTime} [${source}] ${message}`);
-}
-
-export async function setupVite(app: Express, server: Server) {
-  const serverOptions = {
-    middlewareMode: true,
-    hmr: { server },
-    allowedHosts: true,
-  };
-
+export async function setupVite(app: Express) {
+  const httpServer = createHttpServer(app);
+  
   const vite = await createViteServer({
     ...viteConfig,
-    configFile: false,
-    customLogger: {
-      ...viteLogger,
-      error: (msg, options) => {
-        viteLogger.error(msg, options);
-        process.exit(1);
-      },
-    },
-    server: serverOptions,
+    server: { middlewareMode: true },
     appType: "custom",
   });
 
   app.use(vite.middlewares);
-  app.use("*", async (req, res, next) => {
+  app.use(async (req, res, next) => {
+    if (req.originalUrl.startsWith("/api")) return next();
     const url = req.originalUrl;
-
     try {
       const clientTemplate = path.resolve(
-        import.meta.dirname,
+        __dirname,
         "..",
         "client",
         "index.html",
       );
-
       // always reload the index.html file from disk incase it changes
       let template = await fs.promises.readFile(clientTemplate, "utf-8");
       template = template.replace(
@@ -65,10 +49,12 @@ export async function setupVite(app: Express, server: Server) {
       next(e);
     }
   });
+
+  return httpServer;
 }
 
 export function serveStatic(app: Express) {
-  const distPath = path.resolve(import.meta.dirname, "public");
+  const distPath = path.resolve(__dirname, "public");
 
   if (!fs.existsSync(distPath)) {
     throw new Error(
