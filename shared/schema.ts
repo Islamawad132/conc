@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, timestamp, jsonb, uniqueIndex, decimal } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, jsonb, uniqueIndex, decimal, numeric } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -38,8 +38,12 @@ export type StationStatus =
   | "committee-assigned" // بعد تعيين اللجنة
   | "scheduled" // بعد تحديد موعد الزيارة
   | "visited" 
-  | "approved" 
-  | "pending-documents";
+  | "approved"
+  | "pending-documents"
+  | "تحت الإختبار"
+  | "هناك فشل في بعض التجارب"
+  | "يمكن للمحطة استخراج خطاب تشغيل"
+  | "تم اعتماد المحطة";
 
 // Approval type
 export type ApprovalType = "first-time" | "renewal";
@@ -53,6 +57,29 @@ export type ReportLanguage = "arabic" | "english" | "both";
 // Accommodation type
 export type AccommodationType = "station" | "center";
 
+// Visit check item type
+export type VisitCheckItem = 
+  | "scale-calibration" 
+  | "press-calibration" 
+  | "uniformity-tests" 
+  | "chloride-sulfate-tests" 
+  | "water-chemical-tests" 
+  | "7day-compression-strength" 
+  | "28day-compression-strength";
+
+// Visit type
+export type VisitType = "first" | "second" | "additional";
+
+// Visit check status
+export type VisitCheckStatus = "passed" | "failed" | "pending";
+
+// Visit check interface
+export interface VisitCheck {
+  itemId: VisitCheckItem;
+  status: VisitCheckStatus;
+  notes: string;
+}
+
 // Station model
 export const stations = pgTable("stations", {
   id: serial("id").primaryKey(),
@@ -63,33 +90,35 @@ export const stations = pgTable("stations", {
   address: text("address").notNull(),
   cityDistrict: text("city_district").notNull(),
   location: text("location"),
-  distance: integer("distance").notNull(),
+  distance: numeric("distance").notNull(),
   approvalType: text("approval_type", { enum: ["first-time", "renewal"] }).notNull(),
   certificateExpiryDate: timestamp("certificate_expiry_date"),
   mixersCount: integer("mixers_count").notNull(),
-  maxCapacity: decimal("max_capacity", { precision: 4, scale: 2 }).notNull(),
+  maxCapacity: numeric("max_capacity").notNull(),
   mixingType: text("mixing_type", { enum: ["normal", "dry"] }).notNull(),
   reportLanguage: text("report_language", { enum: ["arabic", "english", "both"] }).notNull(),
+  accommodation: text("accommodation", { enum: ["station", "center"] }),
   representativeName: text("representative_name").notNull(),
   representativePhone: text("representative_phone").notNull(),
   representativeId: text("representative_id").notNull(),
   qualityManagerName: text("quality_manager_name").notNull(),
   qualityManagerPhone: text("quality_manager_phone").notNull(),
-  accommodation: text("accommodation", { enum: ["station", "center"] }),
   status: text("status", { 
-    enum: ["pending-payment", "payment-confirmed", "committee-assigned", "scheduled", "visited", "approved", "pending-documents"] 
+    enum: ["pending-payment", "payment-confirmed", "committee-assigned", "scheduled", "visited", "approved", "pending-documents", 
+           "تحت الإختبار", "هناك فشل في بعض التجارب", "يمكن للمحطة استخراج خطاب تشغيل", "تم اعتماد المحطة"] 
   }).notNull().default("pending-payment"),
-  fees: integer("fees").notNull(),
+  fees: numeric("fees").notNull(),
   requestDate: timestamp("request_date").defaultNow().notNull(),
   approvalStartDate: timestamp("approval_start_date"),
   approvalEndDate: timestamp("approval_end_date"),
-  createdBy: integer("created_by").notNull().references(() => users.id),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  createdBy: integer("created_by").references(() => users.id).notNull(),
+  committee: jsonb("committee"),
   paymentReference: text("payment_reference"),
   paymentDate: timestamp("payment_date"),
   paymentProof: text("payment_proof"),
-  committee: jsonb("committee").$type<Array<{ id: number; name: string; role: string }>>(),
+  allowAdditionalVisit: boolean("allow_additional_visit").default(false),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
 export const insertStationSchema = createInsertSchema(stations, {
@@ -97,6 +126,14 @@ export const insertStationSchema = createInsertSchema(stations, {
     z.number(),
     z.string().transform((val) => parseFloat(val))
   ]).transform((val) => val.toString()),
+  distance: z.union([
+    z.number(),
+    z.string().transform((val) => parseFloat(val))
+  ]).transform((val) => val.toString()),
+  fees: z.union([
+    z.number(),
+    z.string().transform((val) => parseFloat(val))
+  ]).transform((val) => val.toString())
 }).omit({
   id: true,
   code: true, // Auto-generated
@@ -131,19 +168,6 @@ export const insertPaymentSchema = createInsertSchema(payments).omit({
 
 export type InsertPayment = z.infer<typeof insertPaymentSchema>;
 export type Payment = typeof payments.$inferSelect;
-
-// Visit check item type
-export type VisitCheckItem = 
-  | "scale-calibration" 
-  | "press-calibration" 
-  | "uniformity-tests" 
-  | "chloride-sulfate-tests" 
-  | "water-chemical-tests" 
-  | "7day-compression-strength" 
-  | "28day-compression-strength";
-
-// Visit type
-export type VisitType = "first" | "second" | "additional";
 
 // Visit model
 export const visits = pgTable("visits", {

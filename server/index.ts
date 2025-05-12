@@ -91,18 +91,14 @@ app.use("/api", (req, _res, next) => {
     if (app.get("env") === "development") {
       const server = await setupVite(app);
       const port = 5000;
-      server.listen({
-        port,
-        host: "0.0.0.0",
-        reusePort: true,
-      }, () => {
-        log(`Server is running on port ${port}`);
+      server.listen(port, "localhost", () => {
+        log(`Server is running on http://localhost:${port}`);
       });
     } else {
       serveStatic(app);
       const port = 5000;
-      app.listen(port, () => {
-        log(`Server is running on port ${port}`);
+      app.listen(port, "localhost", () => {
+        log(`Server is running on http://localhost:${port}`);
       });
     }
   } catch (error) {

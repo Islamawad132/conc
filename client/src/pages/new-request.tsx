@@ -168,7 +168,7 @@ export default function NewRequestPage() {
           location: data.latitude && data.longitude ? `${data.latitude},${data.longitude}` : undefined,
           distance: data.distance,
           approvalType: data.approvalType,
-          certificateExpiryDate: data.certificateExpiryDate,
+          certificateExpiryDate: data.approvalType === "renewal" ? new Date(data.certificateExpiryDate!).toISOString() : undefined,
           mixersCount: data.mixersCount,
           maxCapacity: data.maxCapacity.toString(),
           mixingType: data.mixingType,
@@ -186,7 +186,30 @@ export default function NewRequestPage() {
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.message || 'Failed to create station');
+        
+        // Handle validation errors
+        if (errorData.errors) {
+          const errorMessages = errorData.errors.map((error: any) => {
+            switch (error.code) {
+              case "invalid_type":
+                if (error.path[0] === "certificateExpiryDate") {
+                  return "تاريخ انتهاء الشهادة غير صحيح";
+                }
+                return `خطأ في نوع البيانات: ${error.path.join(".")}`;
+              default:
+                return error.message;
+            }
+          });
+          
+          toast({
+            title: "خطأ في البيانات",
+            description: errorMessages.join("\n"),
+            variant: "destructive",
+          });
+          return;
+        }
+        
+        throw new Error(errorData.message || 'فشل في إنشاء المحطة');
       }
 
       const station = await response.json();

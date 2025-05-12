@@ -1,4 +1,4 @@
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Link, useParams } from "wouter";
 import Sidebar from "@/components/layout/sidebar";
@@ -6,13 +6,14 @@ import PageHeader from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useAuth } from "@/hooks/use-auth";
 import { useQuery } from "@tanstack/react-query";
-import { formatDate } from "@/lib/utils";
+import { formatDate, VisitCheckItem, visitCheckItemNames } from "@/lib/utils";
 import { PaymentConfirmationModal } from "@/components/modals/payment-confirmation";
 import { CommitteeAssignmentModal } from "@/components/modals/committee-assignment";
 import { useState, useEffect } from "react";
 import { VisitScheduleModal } from "@/components/modals/visit-schedule";
 import { toast } from "sonner";
 import { VisitChecks } from "@/components/visit-checks";
+import { Badge } from "@/components/ui/badge";
 
 interface Station {
   id: number;
@@ -36,7 +37,7 @@ interface Station {
   representativeId: string;
   qualityManagerName: string;
   qualityManagerPhone: string;
-  status: "pending-payment" | "payment-confirmed" | "committee-assigned" | "scheduled" | "visited" | "approved" | "pending-documents";
+  status: "pending-payment" | "payment-confirmed" | "committee-assigned" | "scheduled" | "visited" | "approved" | "pending-documents" | "تحت الإختبار" | "هناك فشل في بعض التجارب" | "يمكن للمحطة استخراج خطاب تشغيل" | "تم اعتماد المحطة" | "جاري العمل على الإختبارات";
   fees: number;
   requestDate: string;
   approvalStartDate: string | null;
@@ -47,6 +48,13 @@ interface Station {
   paymentReference?: string;
   paymentDate?: string;
   committee?: Array<{ name: string; role: string }>;
+  allowAdditionalVisit?: boolean;
+}
+
+interface VisitCheck {
+  itemId: VisitCheckItem;
+  status: 'passed' | 'failed' | 'pending';
+  notes: string;
 }
 
 interface Visit {
@@ -55,9 +63,9 @@ interface Visit {
   visitType: "first" | "second" | "additional";
   visitDate: string;
   visitTime: string;
-  status: "scheduled" | "completed" | "cancelled";
+  status: "scheduled" | "completed" | "cancelled" | "visited";
   committee: Array<{ name: string; role: string }>;
-  checks: Array<{ itemId: string; status: boolean; notes: string }> | null;
+  checks: VisitCheck[] | null;
   report: string | null;
   certificateIssued: boolean;
   certificateUrl: string | null;
@@ -66,44 +74,124 @@ interface Visit {
 }
 
 export default function StationDetailsPage() {
-  const { id } = useParams();
+  const { id } = useParams<{ id: string }>();
   const stationId = parseInt(id || "0");
-  const [station, setStation] = useState<Station | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
-  const [isCommitteeModalOpen, setIsCommitteeModalOpen] = useState(false);
-  const [isVisitModalOpen, setIsVisitModalOpen] = useState(false);
   const { user } = useAuth();
+  const [showPaymentConfirmation, setShowPaymentConfirmation] = useState(false);
+  const [showCommitteeAssignment, setShowCommitteeAssignment] = useState(false);
+  const [showVisitSchedule, setShowVisitSchedule] = useState(false);
+  const [visits, setVisits] = useState<Visit[]>([]);
 
-  const fetchStation = async () => {
-    if (!stationId) return;
-    
+  const { data: station, isLoading } = useQuery<Station>({
+    queryKey: [`/api/stations/${stationId}`],
+    enabled: !!stationId
+  });
+
+  const fetchVisits = async () => {
     try {
-      const response = await fetch(`/api/stations/${stationId}`);
-      if (!response.ok) {
-        throw new Error("Failed to fetch station");
-      }
+      const response = await fetch(`/api/stations/${id}/visits`);
+      if (!response.ok) throw new Error("Failed to fetch visits");
       const data = await response.json();
-      setStation(data);
+      setVisits(data);
     } catch (error) {
-      console.error("Error fetching station:", error);
-      toast.error("حدث خطأ أثناء جلب بيانات المحطة");
-    } finally {
-      setIsLoading(false);
+      console.error("Error fetching visits:", error);
+      toast.error("حدث خطأ أثناء جلب بيانات الزيارات");
     }
   };
 
   useEffect(() => {
-    fetchStation();
-  }, [stationId]);
+    fetchVisits();
+  }, [id]);
 
-  // Fetch station visits
-  const { data: visits = [], isLoading: isVisitsLoading } = useQuery<Visit[]>({
-    queryKey: [`/api/stations/${stationId}/visits`],
-    enabled: !!stationId,
-  });
+  const handleChecksComplete = async () => {
+    await fetchVisits();
+  };
 
-  const isLoadingVisits = isVisitsLoading;
+  const formatDate = (date: string | Date | undefined) => {
+    if (!date) return "";
+    return new Date(date).toLocaleDateString("ar-EG");
+  };
+
+  const getVisitByType = (type: "first" | "second" | "additional") => {
+    return visits.find(v => v.visitType === type);
+  };
+
+  const getVisitNumber = (visit: Visit): number => {
+    if (visit.visitType !== 'additional') return 1;
+    const additionalVisits = visits
+      .filter(v => v.visitType === 'additional')
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    return additionalVisits.findIndex(v => v.id === visit.id) + 2;
+  };
+
+  const getFailedChecks = (visits: Visit[]): VisitCheckItem[] => {
+    // Sort visits by creation date in descending order (newest first)
+    const sortedVisits = [...visits].sort((a, b) => 
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+
+    // Find the most recent completed visit
+    const lastCompletedVisit = sortedVisits.find(v => isVisitCompleted(v.status));
+    
+    if (!lastCompletedVisit || !lastCompletedVisit.checks) return [];
+
+    // Return the failed checks from the most recent completed visit
+    return lastCompletedVisit.checks
+      .filter(c => c.status === 'failed')
+      .map(c => c.itemId);
+  };
+
+  const hasIncompleteAdditionalVisit = visits.some(
+    v => v.visitType === 'additional' && (!v.checks || v.checks.some(c => c.status === 'pending'))
+  );
+
+  const shouldShowAdditionalVisitButton = 
+    (user?.role === "secretary" || user?.role === "admin") && 
+    station?.allowAdditionalVisit && 
+    !hasIncompleteAdditionalVisit &&
+    (station.status === "هناك فشل في بعض التجارب" || station.status === "جاري العمل على الإختبارات" || station.status === "يمكن للمحطة استخراج خطاب تشغيل");
+
+  const isVisitCompleted = (status: Visit['status']): boolean => {
+    return status === 'completed' || status === 'visited';
+  };
+
+  const renderVisitResults = (visit: Visit) => {
+    if (!visit.checks) return null;
+
+    // For additional visits, only show failed tests if the visit is not completed
+    const checksToShow = visit.visitType === 'additional' && !isVisitCompleted(visit.status)
+      ? visit.checks.filter(check => getFailedChecks(visits).includes(check.itemId))
+      : visit.checks;
+
+    if (checksToShow.length === 0) return null;
+
+    return (
+      <div className="bg-muted p-4 rounded-lg mb-4">
+        <h4 className="font-semibold mb-2">
+          نتائج الاختبارات
+          {visit.visitType === 'additional' && !isVisitCompleted(visit.status) && ' (الاختبارات الفاشلة فقط)'}:
+        </h4>
+        <ul className="space-y-2">
+          {checksToShow.map((check) => {
+            const status = typeof check.status === 'string' 
+              ? check.status === 'passed'
+              : check.status;
+            return (
+              <li key={check.itemId} className="flex items-center">
+                <span className={`material-icons ml-2 ${status ? 'text-success' : 'text-destructive'}`}>
+                  {status ? 'check_circle' : 'cancel'}
+                </span>
+                <span>{visitCheckItemNames[check.itemId]}</span>
+                {check.notes && (
+                  <span className="mr-2 text-sm text-muted-foreground">({check.notes})</span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    );
+  };
 
   if (isLoading) {
     return (
@@ -135,24 +223,6 @@ export default function StationDetailsPage() {
       </div>
     );
   }
-
-  // Get first and second visits
-  const firstVisit = visits.find(v => v.visitType === "first");
-  const secondVisit = visits.find(v => v.visitType === "second");
-
-  // Helper: is visit scheduled for today or past
-  const isTodayOrPast = (dateStr: string) => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const date = new Date(dateStr);
-    date.setHours(0, 0, 0, 0);
-    return date <= today;
-  };
-
-  const handleChecksComplete = async () => {
-    // Refetch visits after checks are completed
-    await fetchStation();
-  };
 
   return (
     <div className="min-h-screen flex flex-col md:flex-row">
@@ -308,106 +378,47 @@ export default function StationDetailsPage() {
             {/* Visit Reports */}
             <Card className="shadow">
               <CardContent className="p-6">
-                <h2 className="text-xl font-heading font-bold mb-4 pb-2 border-b">تقارير الزيارات</h2>
-                
-                {firstVisit && (
-                  <div className="mb-6">
-                    <h3 className="font-bold mb-2">الزيارة الأولى</h3>
-                    <p className="text-muted-foreground text-sm mb-2">تاريخ الزيارة: {formatDate(firstVisit.visitDate)}</p>
-                    
-                    {firstVisit.checks && (
-                      <div className="bg-muted p-4 rounded-lg mb-4">
-                        <ul className="space-y-3">
-                          {firstVisit.checks.map((check) => (
-                            <li key={check.itemId} className="flex items-center">
-                              <span className={`material-icons ml-2 ${check.status ? 'text-success' : 'text-destructive'}`}>
-                                {check.status ? 'check_circle' : 'cancel'}
-                              </span>
-                              <span>{check.notes}</span>
-                            </li>
-                          ))}
-                        </ul>
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-xl font-heading font-bold">تقارير الزيارات</h2>
+                  
+                </div>
+
+                <div className="space-y-6">
+                  {visits
+                    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+                    .map((visit) => (
+                      <div key={visit.id} className="border-b pb-6 last:border-0 last:pb-0">
+                        <div className="flex justify-between items-center mb-4">
+                          <h3 className="text-lg font-semibold">
+                            {visit.visitType === 'first' && 'الزيارة الأولى'}
+                            {visit.visitType === 'second' && 'الزيارة الثانية'}
+                            {visit.visitType === 'additional' && `الزيارة الإضافية ${getVisitNumber(visit)}`}
+                          </h3>
+                          <div className="text-sm text-muted-foreground">
+                            {formatDate(visit.visitDate)}
+                            {visit.status === 'scheduled' && ' (مجدولة)'}
+                          </div>
+                        </div>
+
+                        {/* Show read-only results for completed visits */}
+                        {isVisitCompleted(visit.status) && renderVisitResults(visit)}
+
+                        {/* Show VisitChecks component for editable visits */}
+                        {visit.status === 'scheduled' && (
+                          <VisitChecks
+                            visitId={visit.id}
+                            stationId={stationId}
+                            visitType={visit.visitType}
+                            initialChecks={visit.checks || []}
+                            onChecksComplete={handleChecksComplete}
+                            visitNumber={getVisitNumber(visit)}
+                            isCompleted={isVisitCompleted(visit.status)}
+                            failedChecks={visit.visitType === 'additional' ? getFailedChecks(visits) : []}
+                          />
+                        )}
                       </div>
-                    )}
-                    
-                    {firstVisit.status === "scheduled" && isTodayOrPast(firstVisit.visitDate) && ["admin","secretary","engineer"].includes(user?.role ?? "") && (
-                      <div className="mt-4">
-                        <VisitChecks
-                          visitId={firstVisit.id}
-                          stationId={firstVisit.stationId}
-                          visitType={firstVisit.visitType}
-                          initialChecks={
-                            (firstVisit.checks || []).map(c => ({
-                              ...c,
-                              itemId: c.itemId as import("@/lib/utils").VisitCheckItem,
-                              status:
-                                typeof c.status === "string"
-                                  ? c.status
-                                  : c.status === true
-                                  ? "passed"
-                                  : c.status === false
-                                  ? "failed"
-                                  : "pending"
-                            }))
-                          }
-                          onChecksComplete={handleChecksComplete}
-                        />
-                      </div>
-                    )}
-                    
-                    {firstVisit.report && (
-                      <div className="flex">
-                        <Button variant="link" className="text-primary p-0 h-auto">
-                          <span className="material-icons ml-1 text-sm">description</span>
-                          محضر الزيارة الأولى
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                )}
-                
-                {secondVisit && (
-                  <div>
-                    <h3 className="font-bold mb-2">الزيارة الثانية</h3>
-                    <p className="text-muted-foreground text-sm mb-2">
-                      تاريخ الزيارة: {formatDate(secondVisit.visitDate)}
-                      {secondVisit.status === "scheduled" && " (مجدولة)"}
-                    </p>
-                    
-                    {secondVisit.status === "scheduled" && isTodayOrPast(secondVisit.visitDate) && ["admin","secretary","engineer"].includes(user?.role ?? "") && (
-                      <div className="mt-4">
-                        <VisitChecks
-                          visitId={secondVisit.id}
-                          stationId={secondVisit.stationId}
-                          visitType={secondVisit.visitType}
-                          initialChecks={
-                            (secondVisit.checks || []).map(c => ({
-                              ...c,
-                              itemId: c.itemId as import("@/lib/utils").VisitCheckItem,
-                              status:
-                                typeof c.status === "string"
-                                  ? c.status
-                                  : c.status === true
-                                  ? "passed"
-                                  : c.status === false
-                                  ? "failed"
-                                  : "pending"
-                            }))
-                          }
-                          onChecksComplete={handleChecksComplete}
-                        />
-                      </div>
-                    )}
-                    
-                    {secondVisit.status === "scheduled" && (
-                      <div className="flex">
-                        <span className="px-3 py-1 rounded-full bg-primary bg-opacity-10 text-primary text-sm">
-                          بانتظار الزيارة
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                )}
+                    ))}
+                </div>
               </CardContent>
             </Card>
           </div>
@@ -451,7 +462,7 @@ export default function StationDetailsPage() {
                       {station.status === "pending-payment" && (
                         <Button 
                           className="w-full" 
-                          onClick={() => setIsPaymentModalOpen(true)}
+                          onClick={() => setShowPaymentConfirmation(true)}
                         >
                           تقديم إثبات الدفع
                         </Button>
@@ -459,17 +470,20 @@ export default function StationDetailsPage() {
                       {station.status === "payment-confirmed" && (
                         <Button 
                           className="w-full" 
-                          onClick={() => setIsCommitteeModalOpen(true)}
+                          onClick={() => setShowCommitteeAssignment(true)}
                         >
                           تعيين اللجنة
                         </Button>
                       )}
-                      {station.status === "committee-assigned" && (
+                      {(station.status === "committee-assigned" || 
+                        station.status === "هناك فشل في بعض التجارب" || 
+                        station.status === "يمكن للمحطة استخراج خطاب تشغيل" ||
+                        station.status === "تحت الإختبار") && (
                         <Button 
                           className="w-full" 
-                          onClick={() => setIsVisitModalOpen(true)}
+                          onClick={() => setShowVisitSchedule(true)}
                         >
-                          إنشاء زيارة
+                          {station.status === "committee-assigned" ? "إنشاء زيارة" : "إنشاء زيارة إضافية"}
                         </Button>
                       )}
                     </div>
@@ -506,7 +520,7 @@ export default function StationDetailsPage() {
                     <Button 
                       className="w-full mt-2" 
                       variant="outline"
-                      onClick={() => setIsPaymentModalOpen(true)}
+                      onClick={() => setShowPaymentConfirmation(true)}
                     >
                       تأكيد الدفع
                     </Button>
@@ -516,30 +530,84 @@ export default function StationDetailsPage() {
             </Card>
           </div>
         </div>
+
+        {/* Station Actions */}
+        {/* <Card className="shadow">
+          <CardContent className="p-6">
+            <h2 className="text-xl font-heading font-bold mb-4 pb-2 border-b">الإجراءات</h2>
+            
+            <div className="space-y-4">
+              {station.status === "pending-payment" && (
+                <div>
+                  <p className="text-sm text-muted-foreground mb-2">
+                    يرجى تقديم إثبات الدفع لمتابعة الإجراءات
+                  </p>
+                  <Button 
+                    className="w-full" 
+                    onClick={() => setShowPaymentConfirmation(true)}
+                  >
+                    تقديم إثبات الدفع
+                  </Button>
+                </div>
+              )}
+              
+              {station.status === "payment-confirmed" && (
+                <div>
+                  <p className="text-sm text-muted-foreground mb-2">
+                    تم تأكيد الدفع. يرجى تعيين اللجنة للمتابعة
+                  </p>
+                  <Button 
+                    className="w-full" 
+                    onClick={() => setShowCommitteeAssignment(true)}
+                  >
+                    تعيين اللجنة
+                  </Button>
+                </div>
+              )}
+              
+              {shouldShowAdditionalVisitButton && (
+                <div>
+                  <p className="text-sm text-muted-foreground mb-2">
+                    يمكنك إنشاء زيارة إضافية للمحطة
+                  </p>
+                  <Button 
+                    className="w-full" 
+                    onClick={() => setShowVisitSchedule(true)}
+                  >
+                    إنشاء زيارة إضافية
+                  </Button>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card> */}
       </main>
 
       {/* Modals */}
-      <PaymentConfirmationModal 
-        isOpen={isPaymentModalOpen}
-        onClose={() => setIsPaymentModalOpen(false)}
-        stationId={stationId}
-      />
-      
-      <CommitteeAssignmentModal
-        isOpen={isCommitteeModalOpen}
-        onClose={() => setIsCommitteeModalOpen(false)}
-        stationId={stationId}
-      />
-      
-      <VisitScheduleModal
-        isOpen={isVisitModalOpen}
-        onClose={() => setIsVisitModalOpen(false)}
-        stationId={station.id}
-        onSuccess={() => {
-          // Refresh station data
-          fetchStation();
-        }}
-      />
+      {showPaymentConfirmation && (
+        <PaymentConfirmationModal
+          isOpen={showPaymentConfirmation}
+          onClose={() => setShowPaymentConfirmation(false)}
+          stationId={stationId}
+        />
+      )}
+
+      {showCommitteeAssignment && (
+        <CommitteeAssignmentModal
+          isOpen={showCommitteeAssignment}
+          onClose={() => setShowCommitteeAssignment(false)}
+          stationId={stationId}
+        />
+      )}
+
+      {showVisitSchedule && (
+        <VisitScheduleModal
+          isOpen={showVisitSchedule}
+          onClose={() => setShowVisitSchedule(false)}
+          stationId={stationId}
+          onSuccess={fetchVisits}
+        />
+      )}
     </div>
   );
 }

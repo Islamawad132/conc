@@ -5,13 +5,14 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export type UserRole = "admin" | "secretary" | "engineer" | "client";
+export type UserRole = "admin" | "secretary" | "engineer" | "client" | "chairman";
 
 export const roleNames: Record<UserRole, string> = {
   admin: "مسؤول النظام",
   secretary: "سكرتير",
   engineer: "مهندس",
   client: "عميل",
+  chairman: "رئيس لجنة"
 };
 
 export type ApprovalType = "first-time" | "renewal";
@@ -50,7 +51,12 @@ export type StationStatus =
   | "scheduled" 
   | "visited" 
   | "approved" 
-  | "pending-documents";
+  | "pending-documents"
+  | "تحت الإختبار"
+  | "هناك فشل في بعض التجارب"
+  | "يمكن للمحطة استخراج خطاب تشغيل"
+  | "تم اعتماد المحطة"
+  | "جاري العمل على الإختبارات";
 
 export const stationStatusNames: Record<StationStatus, string> = {
   "pending-payment": "بانتظار الدفع",
@@ -60,6 +66,11 @@ export const stationStatusNames: Record<StationStatus, string> = {
   "visited": "تمت الزيارة",
   "approved": "معتمد",
   "pending-documents": "بانتظار المستندات",
+  "تحت الإختبار": "تحت الإختبار",
+  "هناك فشل في بعض التجارب": "هناك فشل في بعض التجارب",
+  "يمكن للمحطة استخراج خطاب تشغيل": "يمكن للمحطة استخراج خطاب تشغيل",
+  "تم اعتماد المحطة": "تم اعتماد المحطة",
+  "جاري العمل على الإختبارات": "جاري العمل على الإختبارات"
 };
 
 export const stationStatusColors: Record<StationStatus, string> = {
@@ -70,6 +81,11 @@ export const stationStatusColors: Record<StationStatus, string> = {
   "visited": "secondary",
   "approved": "success",
   "pending-documents": "destructive",
+  "تحت الإختبار": "info",
+  "هناك فشل في بعض التجارب": "destructive",
+  "يمكن للمحطة استخراج خطاب تشغيل": "success",
+  "تم اعتماد المحطة": "success",
+  "جاري العمل على الإختبارات": "info"
 };
 
 export type VisitCheckItem = 

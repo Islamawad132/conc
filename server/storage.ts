@@ -2,7 +2,7 @@ import {
   users, stations, payments, visits, settings, 
   approvalTypes, mixingTypes,
   User, InsertUser, 
-  Station, InsertStation,
+  Station, InsertStation, StationStatus,
   Payment, InsertPayment,
   Visit, InsertVisit,
   Settings, InsertSettings,
@@ -192,27 +192,64 @@ export class DatabaseStorage implements IStorage {
     try {
       // Fetch old station for logging
       const oldStation = await this.getStation(id);
+      console.log('Current station state:', {
+        id,
+        oldStatus: oldStation?.status,
+        newStatus: data.status,
+        oldData: oldStation,
+        updateData: data
+      });
+
       const { committee, ...rest } = data;
       const updateData: Record<string, any> = {
         ...rest,
         updatedAt: new Date(),
       };
+      
       if (committee !== undefined) {
-        // Convert committee array to JSONB format
         updateData.committee = committee;
       }
+
+      // Explicitly update the status if provided
+      if (data.status) {
+        console.log('Updating station status:', {
+          id,
+          oldStatus: oldStation?.status,
+          newStatus: data.status
+        });
+        updateData.status = data.status;
+      }
+
+      // Use returning() to get the updated record
       const [station] = await db
         .update(stations)
         .set(updateData)
         .where(eq(stations.id, id))
         .returning();
-      // Log status change
-      if (oldStation && data.status && oldStation.status !== data.status) {
-        console.log(`[StationStatus] Station ID: ${id} | Old: ${oldStation.status} | New: ${data.status}`);
-      }
+
+      // Verify the update
+      console.log('Station update result:', {
+        id,
+        oldStatus: oldStation?.status,
+        updatedStatus: station.status,
+        updateSuccessful: station.status === data.status
+      });
+
+      // Double check the status was updated correctly
+      const verifyStation = await this.getStation(id);
+      console.log('Verification check:', {
+        id,
+        statusAfterUpdate: verifyStation?.status,
+        statusMatches: verifyStation?.status === data.status
+      });
+
       return station;
     } catch (error) {
-      console.error("Error updating station:", error);
+      console.error('Error updating station:', {
+        id,
+        error,
+        updateData: data
+      });
       throw error;
     }
   }
@@ -341,41 +378,144 @@ export class DatabaseStorage implements IStorage {
   }
   
   async updateVisit(id: number, visitData: Partial<Visit>): Promise<Visit | undefined> {
-    // Get current visit to check status change
-    const [currentVisit] = await db.select().from(visits).where(eq(visits.id, id));
-    if (!currentVisit) return undefined;
-    
-    const [updatedVisit] = await db
-      .update(visits)
-      .set({
-        ...visitData,
-        updatedAt: new Date()
-      })
-      .where(eq(visits.id, id))
-      .returning();
-    
-    // Update station status if visit completed
-    if (currentVisit.status !== "completed" && updatedVisit.status === "completed") {
-      const station = await this.getStation(currentVisit.stationId);
-      if (station) {
-        await this.updateStation(station.id, { status: "visited" });
-      }
-    }
-    
-    // Update station if certificate issued
-    if (!currentVisit.certificateIssued && updatedVisit.certificateIssued) {
-      const station = await this.getStation(currentVisit.stationId);
-      if (station) {
-        await this.updateStation(station.id, { 
-          status: "approved",
-          approvalStartDate: new Date(),
-          // Set approval end date to one year minus one day from start date
-          approvalEndDate: new Date(Date.now() + 364 * 24 * 60 * 60 * 1000)
+    try {
+      // Get current visit to check status change
+      const [currentVisit] = await db.select().from(visits).where(eq(visits.id, id));
+      if (!currentVisit) return undefined;
+      
+      console.log('Starting visit update:', {
+        visitId: id,
+        currentStatus: currentVisit.status,
+        newStatus: visitData.status
+      });
+      
+      // Start a transaction
+      return await db.transaction(async (tx) => {
+        // Update visit
+        const [visitUpdate] = await tx
+          .update(visits)
+          .set({
+            ...visitData,
+            updatedAt: new Date()
+          })
+          .where(eq(visits.id, id))
+          .returning();
+        
+        console.log('Visit updated:', {
+          visitId: id,
+          oldStatus: currentVisit.status,
+          newStatus: visitUpdate.status
         });
-      }
+        
+        // Update station status if visit completed
+        if (visitUpdate.status === "completed") {
+          const [station] = await tx.select().from(stations).where(eq(stations.id, currentVisit.stationId));
+          if (station) {
+            console.log('Processing completed visit for station:', {
+              stationId: station.id,
+              currentStationStatus: station.status
+            });
+            
+            // Get current visit checks
+            const checks = (visitUpdate.checks || []) as Array<{ itemId: string; status: string; notes: string }>;
+            console.log('Visit checks:', checks);
+            
+            // Define the first 6 tests
+            const firstSixTests = [
+              "scale-calibration",
+              "press-calibration",
+              "uniformity-tests",
+              "chloride-sulfate-tests",
+              "water-chemical-tests",
+              "7day-compression-strength"
+            ];
+            
+            // Get results for first 6 tests
+            const first6Results = checks.filter(check => firstSixTests.includes(check.itemId));
+            console.log('First 6 test results:', {
+              expected: firstSixTests.length,
+              found: first6Results.length,
+              results: first6Results
+            });
+            
+            // Check if we have all 6 tests and they all passed
+            const hasAllFirst6Tests = first6Results.length === firstSixTests.length;
+            const allFirst6Passed = hasAllFirst6Tests && 
+              first6Results.every(check => check.status === 'passed');
+            
+            console.log('First 6 tests analysis:', {
+              hasAllTests: hasAllFirst6Tests,
+              allPassed: allFirst6Passed,
+              testsCount: first6Results.length
+            });
+            
+            // Get test 7 result
+            const test7 = checks.find(check => check.itemId === "28day-compression-strength");
+            console.log('Test 7 (28-day) result:', test7);
+            
+            let stationStatus: StationStatus;
+            let allowAdditionalVisit = false;
+            
+            // المنطق الجديد: إذا نجحت الاختبارات الستة الأولى
+            if (allFirst6Passed) {
+              console.log('All first 6 tests passed, checking test 7...');
+              // بغض النظر عن نتيجة الاختبار السابع، يمكن للمحطة استخراج خطاب تشغيل
+              stationStatus = "يمكن للمحطة استخراج خطاب تشغيل";
+              
+              // إذا فشل الاختبار السابع، نسمح بزيارة إضافية
+              if (test7?.status === 'failed') {
+                console.log('Test 7 failed, allowing additional visit');
+                allowAdditionalVisit = true;
+              }
+              // إذا نجح الاختبار السابع، نعتمد المحطة
+              else if (test7?.status === 'passed') {
+                console.log('Test 7 passed, approving station');
+                stationStatus = "تم اعتماد المحطة";
+                allowAdditionalVisit = false;
+              }
+            } else {
+              // إذا فشل أي من الاختبارات الستة الأولى
+              console.log('Some of first 6 tests failed');
+              stationStatus = "هناك فشل في بعض التجارب";
+              allowAdditionalVisit = true;
+            }
+            
+            console.log('Final decision:', {
+              visitId: id,
+              stationId: station.id,
+              oldStatus: station.status,
+              newStatus: stationStatus,
+              allowAdditionalVisit,
+              allFirst6Passed,
+              test7Status: test7?.status
+            });
+            
+            // Update station status within the transaction
+            const [updatedStation] = await tx
+              .update(stations)
+              .set({ 
+                status: stationStatus,
+                allowAdditionalVisit,
+                updatedAt: new Date()
+              })
+              .where(eq(stations.id, station.id))
+              .returning();
+            
+            console.log('Station update completed:', {
+              stationId: station.id,
+              oldStatus: station.status,
+              newStatus: updatedStation.status,
+              allowAdditionalVisit: updatedStation.allowAdditionalVisit
+            });
+          }
+        }
+        
+        return visitUpdate;
+      });
+    } catch (error) {
+      console.error('Error in updateVisit:', error);
+      throw error;
     }
-    
-    return updatedVisit;
   }
   
   async deleteVisit(id: number): Promise<boolean> {

@@ -17,6 +17,8 @@ import multer from "multer";
 import path from "path";
 import { WebSocketServer } from "ws";
 import { hashPassword } from "./hash-password";
+import { eq } from "drizzle-orm";
+import { db } from "./db";
 
 const app = express();
 
@@ -365,7 +367,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // إذا تم إرسال stationStatus، حدث حالة المحطة
       if (req.body.stationStatus) {
-        await storage.updateStation(visit.stationId, { status: req.body.stationStatus });
+        const updateData: any = {
+          status: req.body.stationStatus
+        };
+        
+        // إذا كان هناك سماح بزيارة إضافية
+        if (typeof req.body.allowAdditionalVisit === 'boolean') {
+          updateData.allowAdditionalVisit = req.body.allowAdditionalVisit;
+        }
+        
+        await storage.updateStation(visit.stationId, updateData);
       }
 
       res.json(updatedVisit);
