@@ -119,11 +119,6 @@ export function VisitChecks({
   };
 
   const handleSubmit = async () => {
-    if (!areAllChecksCompleted()) {
-      toast.error("يجب إكمال جميع الاختبارات");
-      return;
-    }
-
     try {
       const response = await fetch(`/api/visits/${visitId}`, {
         method: "PATCH",
@@ -132,7 +127,8 @@ export function VisitChecks({
         },
         body: JSON.stringify({
           checks,
-          status: "completed",
+          // Only mark as completed if all checks are done
+          status: areAllChecksCompleted() ? "completed" : "scheduled",
         }),
       });
 
@@ -227,7 +223,7 @@ export function VisitChecks({
         {!isCompleted && (
           <div className="mt-6 flex justify-end">
             <Button onClick={handleSubmit}>
-              {areAllChecksCompleted() ? "تأكيد النتائج النهائية" : "حفظ النتائج"}
+              حفظ النتائج
             </Button>
           </div>
         )}

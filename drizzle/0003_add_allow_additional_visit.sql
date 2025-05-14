@@ -1,1 +1,0 @@
-ALTER TABLE "stations" ADD COLUMN IF NOT EXISTS "allow_additional_visit" boolean DEFAULT false; 

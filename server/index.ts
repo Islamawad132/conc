@@ -3,7 +3,6 @@ import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { db } from "./db";
 import * as schema from "@shared/schema";
-import { migrate } from "drizzle-orm/neon-serverless/migrator";
 import { sql } from "drizzle-orm";
 import { storage } from "./storage";
 import { setupAuth } from "./auth";
@@ -11,6 +10,8 @@ import { hashPassword } from "./hash-password";
 import { insertUserSchema } from "@shared/schema";
 import { z } from "zod";
 import cors from "cors";
+import * as fs from "fs/promises";
+import * as path from "path";
 
 const app = express();
 
@@ -61,17 +62,37 @@ app.use("/api", (req, _res, next) => {
 
 (async () => {
   try {
-    // Check if tables exist before running migrations
-    try {
-      log("Checking database tables...");
-      await db.execute(sql`SELECT 1 FROM ${schema.users} LIMIT 1`);
-      log("Database tables already exist, skipping migrations");
-    } catch (error) {
-      // If table doesn't exist, run migrations
-      log("Creating database tables...");
-      await migrate(db, { migrationsFolder: "./drizzle" });
-      log("Database tables created successfully");
+    // Run migrations if needed
+    log("Running database migrations...");
+    
+    // Read and execute the initial migration only if tables don't exist
+    log("Checking if tables exist...");
+    const result = await db.execute(sql`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public'
+      ORDER BY table_name;
+    `);
+
+    if (result.rows.length === 0) {
+      log("No tables found. Running initial migration...");
+      const migrationPath = path.join(process.cwd(), "drizzle", "0000_initial.sql");
+      const migrationSql = await fs.readFile(migrationPath, "utf8");
+      await db.execute(sql.raw(migrationSql));
+      
+      log("Verifying table creation...");
+      const tablesResult = await db.execute(sql`
+        SELECT table_name 
+        FROM information_schema.tables 
+        WHERE table_schema = 'public'
+        ORDER BY table_name;
+      `);
+      log(`Created tables: ${JSON.stringify(tablesResult.rows)}`);
+    } else {
+      log("Tables already exist, skipping initial migration");
     }
+    
+    log("Database migrations completed successfully");
 
     // Set up authentication
     setupAuth(app);
@@ -90,13 +111,13 @@ app.use("/api", (req, _res, next) => {
     // Development setup - Vite middleware must be last!
     if (app.get("env") === "development") {
       const server = await setupVite(app);
-      const port = 5000;
+      const port = 5001;
       server.listen(port, "localhost", () => {
         log(`Server is running on http://localhost:${port}`);
       });
     } else {
       serveStatic(app);
-      const port = 5000;
+      const port = 5001;
       app.listen(port, "localhost", () => {
         log(`Server is running on http://localhost:${port}`);
       });

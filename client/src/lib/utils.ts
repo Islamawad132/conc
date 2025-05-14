@@ -149,7 +149,7 @@ export function calculateFees(
   
   let additionalReportCost = 0;
   if (reportLanguage === "both") {
-    additionalReportCost = (distanceCost + mixersCost) * ADDITIONAL_REPORT_RATE;
+    additionalReportCost = (distanceCost + mixersCost + accommodationCost) * ADDITIONAL_REPORT_RATE;
   }
   
   const subtotal = distanceCost + mixersCost + accommodationCost + additionalReportCost;

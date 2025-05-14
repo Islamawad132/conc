@@ -269,7 +269,12 @@ export default function StationsPage() {
                       <div className="space-y-2 text-sm mb-4">
                         <div className="flex items-center">
                           <span className="material-icons text-primary text-sm ml-2">location_on</span>
-                          <span>{station.location}</span>
+                          <span>{station.location.split(',').map((coord, index) => (
+                            <span key={index}>
+                              {parseFloat(coord).toFixed(6)}
+                              {index === 0 ? ', ' : ''}
+                            </span>
+                          ))}</span>
                         </div>
                         <div className="flex items-center">
                           <span className="material-icons text-primary text-sm ml-2">business</span>

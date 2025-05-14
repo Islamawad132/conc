@@ -11,9 +11,13 @@ import { PaymentConfirmationModal } from "@/components/modals/payment-confirmati
 import { CommitteeAssignmentModal } from "@/components/modals/committee-assignment";
 import { useState, useEffect } from "react";
 import { VisitScheduleModal } from "@/components/modals/visit-schedule";
+import { OperationLetterModal } from "@/components/modals/operation-letter-modal";
+import { ApprovalCertificateModal } from "@/components/modals/approval-certificate-modal";
 import { toast } from "sonner";
 import { VisitChecks } from "@/components/visit-checks";
 import { Badge } from "@/components/ui/badge";
+import { StationStatus } from "@shared/schema";
+import { useQueryClient } from "@tanstack/react-query";
 
 interface Station {
   id: number;
@@ -47,7 +51,7 @@ interface Station {
   updatedAt: string;
   paymentReference?: string;
   paymentDate?: string;
-  committee?: Array<{ name: string; role: string }>;
+  committee?: Array<{ name: string; role: string; phone?: string }>;
   allowAdditionalVisit?: boolean;
 }
 
@@ -73,6 +77,175 @@ interface Visit {
   updatedAt: string;
 }
 
+interface AllVisitsResults {
+  first6Tests: {
+    [key: string]: {
+      status: 'passed' | 'failed' | 'pending';
+      visitId: number;
+      visitDate: Date;
+    };
+  };
+  test7: {
+    status: 'passed' | 'failed' | 'pending' | null;
+    visitId: number | null;
+    visitDate: Date | null;
+  };
+}
+
+const calculateAllVisitsResults = (visits: Visit[]): AllVisitsResults => {
+  console.log('Client calculating results from visits:', visits);
+  
+  // Sort visits by date in ascending order
+  const sortedVisits = [...visits].sort((a, b) => 
+    new Date(a.visitDate).getTime() - new Date(b.visitDate).getTime()
+  );
+
+  const firstSixTests = [
+    "scale-calibration",
+    "press-calibration",
+    "uniformity-tests",
+    "chloride-sulfate-tests",
+    "water-chemical-tests",
+    "7day-compression-strength"
+  ];
+
+  // Initialize results
+  const results: AllVisitsResults = {
+    first6Tests: {},
+    test7: {
+      status: null,
+      visitId: null,
+      visitDate: null
+    }
+  };
+
+  // Initialize first 6 tests with pending results
+  firstSixTests.forEach(testId => {
+    results.first6Tests[testId] = {
+      status: 'pending',
+      visitId: 0,
+      visitDate: new Date(0)
+    };
+  });
+
+  // First, process the first visit to get initial results
+  const firstVisit = sortedVisits.find(v => v.visitType === 'first');
+  if (firstVisit?.checks) {
+    for (const check of firstVisit.checks) {
+      if (firstSixTests.includes(check.itemId)) {
+        results.first6Tests[check.itemId] = {
+          status: check.status,
+          visitId: firstVisit.id,
+          visitDate: new Date(firstVisit.visitDate)
+        };
+      } else if (check.itemId === "28day-compression-strength") {
+        results.test7 = {
+          status: check.status,
+          visitId: firstVisit.id,
+          visitDate: new Date(firstVisit.visitDate)
+        };
+      }
+    }
+  }
+
+  // Then process additional visits to update failed or pending tests
+  const additionalVisits = sortedVisits
+    .filter(v => v.visitType === 'additional')
+    .sort((a, b) => new Date(b.visitDate).getTime() - new Date(a.visitDate).getTime());
+
+  for (const visit of additionalVisits) {
+    if (!visit.checks) continue;
+
+    for (const check of visit.checks) {
+      // For first 6 tests in additional visits, only update if previously failed
+      if (firstSixTests.includes(check.itemId)) {
+        const currentResult = results.first6Tests[check.itemId];
+        if (currentResult.status === 'failed') {
+          results.first6Tests[check.itemId] = {
+            status: check.status,
+            visitId: visit.id,
+            visitDate: new Date(visit.visitDate)
+          };
+        }
+      }
+      // For test 7, always use the most recent result from additional visits
+      else if (check.itemId === "28day-compression-strength") {
+        results.test7 = {
+          status: check.status,
+          visitId: visit.id,
+          visitDate: new Date(visit.visitDate)
+        };
+      }
+    }
+  }
+
+  console.log('Client calculated final results:', results);
+  return results;
+};
+
+function determineStationStatus(results: AllVisitsResults): { status: StationStatus; allowAdditionalVisit: boolean } {
+  // Get results of first 6 tests
+  const firstSixTests = [
+    "scale-calibration",
+    "press-calibration",
+    "uniformity-tests",
+    "chloride-sulfate-tests",
+    "water-chemical-tests",
+    "7day-compression-strength"
+  ];
+
+  // Check if any test has failed
+  const hasFailedTests = Object.entries(results.first6Tests)
+    .some(([testId, result]) => result.status === 'failed');
+
+  // Check if all first 6 tests have passed
+  const allFirst6Passed = Object.entries(results.first6Tests)
+    .every(([testId, result]) => result.status === 'passed');
+
+  // Check if all first 6 tests have results (not pending)
+  const allFirst6HaveResults = Object.entries(results.first6Tests)
+    .every(([testId, result]) => result.status !== 'pending');
+
+  // If any of first 6 tests failed
+  if (hasFailedTests) {
+    return {
+      status: "هناك فشل في بعض التجارب",
+      allowAdditionalVisit: true
+    };
+  }
+
+  // If all first 6 tests have passed
+  if (allFirst6Passed) {
+    // Check test 7 status - use the most recent result
+    if (results.test7.status === 'passed') {
+      return {
+        status: "تم اعتماد المحطة",
+        allowAdditionalVisit: false
+      };
+    }
+    // If test 7 failed or is pending
+    else {
+      return {
+        status: "يمكن للمحطة استخراج خطاب تشغيل",
+        allowAdditionalVisit: true
+      };
+    }
+  }
+
+  // If not all first 6 tests have results yet
+  if (!allFirst6HaveResults) {
+    return {
+      status: "تحت الإختبار",
+      allowAdditionalVisit: true
+    };
+  }
+
+  return {
+    status: "تحت الإختبار",
+    allowAdditionalVisit: true
+  };
+}
+
 export default function StationDetailsPage() {
   const { id } = useParams<{ id: string }>();
   const stationId = parseInt(id || "0");
@@ -80,7 +253,11 @@ export default function StationDetailsPage() {
   const [showPaymentConfirmation, setShowPaymentConfirmation] = useState(false);
   const [showCommitteeAssignment, setShowCommitteeAssignment] = useState(false);
   const [showVisitSchedule, setShowVisitSchedule] = useState(false);
+  const [showOperationLetter, setShowOperationLetter] = useState(false);
+  const [showApprovalCertificate, setShowApprovalCertificate] = useState(false);
   const [visits, setVisits] = useState<Visit[]>([]);
+  const [aggregatedResults, setAggregatedResults] = useState<AllVisitsResults | null>(null);
+  const queryClient = useQueryClient();
 
   const { data: station, isLoading } = useQuery<Station>({
     queryKey: [`/api/stations/${stationId}`],
@@ -90,9 +267,25 @@ export default function StationDetailsPage() {
   const fetchVisits = async () => {
     try {
       const response = await fetch(`/api/stations/${id}/visits`);
-      if (!response.ok) throw new Error("Failed to fetch visits");
+      if (!response.ok) {
+        throw new Error("Failed to fetch visits");
+      }
       const data = await response.json();
       setVisits(data);
+      
+      // Calculate and set aggregated results
+      const results = calculateAllVisitsResults(data);
+      setAggregatedResults(results);
+      
+      // Refresh station data to get the updated status
+      if (data.length > 0) {
+        const stationResponse = await fetch(`/api/stations/${id}`);
+        if (stationResponse.ok) {
+          const stationData = await stationResponse.json();
+          // Force a refresh of the station data in React Query cache
+          queryClient.setQueryData([`/api/stations/${stationId}`], stationData);
+        }
+      }
     } catch (error) {
       console.error("Error fetching visits:", error);
       toast.error("حدث خطأ أثناء جلب بيانات الزيارات");
@@ -104,7 +297,30 @@ export default function StationDetailsPage() {
   }, [id]);
 
   const handleChecksComplete = async () => {
-    await fetchVisits();
+    try {
+      // Fetch visits to get the latest data
+      await fetchVisits();
+      
+      // Force a recalculation of station status on the server
+      const recalcResponse = await fetch(`/api/stations/${stationId}/recalculate`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        }
+      });
+
+      if (!recalcResponse.ok) {
+        throw new Error("Failed to recalculate station status");
+      }
+      
+      // Refresh the data again to get the updated status
+      await fetchVisits();
+      
+      toast.success("تم تحديث حالة المحطة بنجاح");
+    } catch (error) {
+      console.error("Error updating station status:", error);
+      toast.error("حدث خطأ أثناء تحديث حالة المحطة");
+    }
   };
 
   const formatDate = (date: string | Date | undefined) => {
@@ -155,40 +371,42 @@ export default function StationDetailsPage() {
     return status === 'completed' || status === 'visited';
   };
 
-  const renderVisitResults = (visit: Visit) => {
-    if (!visit.checks) return null;
-
-    // For additional visits, only show failed tests if the visit is not completed
-    const checksToShow = visit.visitType === 'additional' && !isVisitCompleted(visit.status)
-      ? visit.checks.filter(check => getFailedChecks(visits).includes(check.itemId))
-      : visit.checks;
-
-    if (checksToShow.length === 0) return null;
+  const renderAggregatedResults = () => {
+    if (!aggregatedResults) return null;
 
     return (
       <div className="bg-muted p-4 rounded-lg mb-4">
-        <h4 className="font-semibold mb-2">
-          نتائج الاختبارات
-          {visit.visitType === 'additional' && !isVisitCompleted(visit.status) && ' (الاختبارات الفاشلة فقط)'}:
-        </h4>
-        <ul className="space-y-2">
-          {checksToShow.map((check) => {
-            const status = typeof check.status === 'string' 
-              ? check.status === 'passed'
-              : check.status;
-            return (
-              <li key={check.itemId} className="flex items-center">
-                <span className={`material-icons ml-2 ${status ? 'text-success' : 'text-destructive'}`}>
-                  {status ? 'check_circle' : 'cancel'}
-                </span>
-                <span>{visitCheckItemNames[check.itemId]}</span>
-                {check.notes && (
-                  <span className="mr-2 text-sm text-muted-foreground">({check.notes})</span>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+        <h4 className="font-semibold mb-4">النتائج النهائية للاختبارات:</h4>
+        <div className="space-y-3">
+          {Object.entries(aggregatedResults.first6Tests).map(([testId, result]) => (
+            <div key={testId} className="flex items-center justify-between">
+              <span>{visitCheckItemNames[testId as VisitCheckItem]}</span>
+              <div className={`px-3 py-1 rounded-full ${
+                result.status === 'passed' ? 'bg-success/20 text-success' :
+                result.status === 'failed' ? 'bg-destructive/20 text-destructive' :
+                'bg-muted text-muted-foreground'
+              }`}>
+                {result.status === 'passed' ? 'ناجح' :
+                 result.status === 'failed' ? 'فاشل' :
+                 'تحت الاختبار'}
+              </div>
+            </div>
+          ))}
+          {aggregatedResults.test7.status && (
+            <div className="flex items-center justify-between">
+              <span>{visitCheckItemNames["28day-compression-strength"]}</span>
+              <div className={`px-3 py-1 rounded-full ${
+                aggregatedResults.test7.status === 'passed' ? 'bg-success/20 text-success' :
+                aggregatedResults.test7.status === 'failed' ? 'bg-destructive/20 text-destructive' :
+                'bg-muted text-muted-foreground'
+              }`}>
+                {aggregatedResults.test7.status === 'passed' ? 'ناجح' :
+                 aggregatedResults.test7.status === 'failed' ? 'فاشل' :
+                 'تحت الاختبار'}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     );
   };
@@ -251,6 +469,14 @@ export default function StationDetailsPage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Main Station Info */}
           <div className="lg:col-span-2 space-y-6">
+            {/* Add aggregated results at the top */}
+            <Card className="shadow">
+              <CardContent className="p-6">
+                <h2 className="text-xl font-heading font-bold mb-4 pb-2 border-b">نتائج الاختبارات النهائية</h2>
+                {renderAggregatedResults()}
+              </CardContent>
+            </Card>
+            
             {/* General Info */}
             <Card className="shadow">
               <CardContent className="p-6">
@@ -375,6 +601,53 @@ export default function StationDetailsPage() {
               </CardContent>
             </Card>
             
+            {/* Committee Info */}
+            {station.committee && station.committee.length > 0 && (
+              <Card className="shadow">
+                <CardContent className="p-6">
+                  <div className="flex justify-between items-center mb-4">
+                    <h2 className="text-xl font-heading font-bold">اللجنة المسؤولة</h2>
+                    {user?.role === "admin" && station.status !== "تم اعتماد المحطة" && (
+                      <div className="flex gap-2">
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          onClick={() => setShowCommitteeAssignment(true)}
+                        >
+                          <span className="material-icons ml-1 text-sm">edit</span>
+                          تعديل اللجنة
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {station.committee.map((member, index) => (
+                      <div key={index} className="p-4 border rounded-lg bg-card shadow-sm hover:shadow-md transition-shadow">
+                        <div className="flex items-center mb-3">
+                          <div className="flex items-center justify-center w-10 h-10 rounded-full bg-primary/10 mr-3">
+                            <span className="material-icons text-primary">
+                              {member.role === "chairman" ? "stars" : 
+                               member.role === "engineer" ? "engineering" : 
+                               member.role === "secretary" ? "edit_note" : "person"}
+                            </span>
+                          </div>
+                          <div>
+                            <p className="font-medium text-lg">{member.name}</p>
+                            <p className="text-sm text-muted-foreground">
+                              {member.role === "chairman" ? "رئيس اللجنة" : 
+                               member.role === "engineer" ? "مهندس" : 
+                               member.role === "secretary" ? "سكرتير" : member.role}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+            
             {/* Visit Reports */}
             <Card className="shadow">
               <CardContent className="p-6">
@@ -401,7 +674,26 @@ export default function StationDetailsPage() {
                         </div>
 
                         {/* Show read-only results for completed visits */}
-                        {isVisitCompleted(visit.status) && renderVisitResults(visit)}
+                        {isVisitCompleted(visit.status) && (
+                          <div className="bg-muted p-4 rounded-lg mb-4">
+                            <h4 className="font-semibold mb-2">
+                              نتائج الزيارة:
+                            </h4>
+                            <ul className="space-y-2">
+                              {visit.checks?.map((check) => (
+                                <li key={check.itemId} className="flex items-center">
+                                  <span className={`material-icons ml-2 ${check.status === 'passed' ? 'text-success' : 'text-destructive'}`}>
+                                    {check.status === 'passed' ? 'check_circle' : 'cancel'}
+                                  </span>
+                                  <span>{visitCheckItemNames[check.itemId]}</span>
+                                  {check.notes && (
+                                    <span className="mr-2 text-sm text-muted-foreground">({check.notes})</span>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
 
                         {/* Show VisitChecks component for editable visits */}
                         {visit.status === 'scheduled' && (
@@ -467,7 +759,7 @@ export default function StationDetailsPage() {
                           تقديم إثبات الدفع
                         </Button>
                       )}
-                      {station.status === "payment-confirmed" && (
+                      {(station.status === "payment-confirmed" || (user?.role === "admin" && !station.committee)) && (
                         <Button 
                           className="w-full" 
                           onClick={() => setShowCommitteeAssignment(true)}
@@ -484,6 +776,26 @@ export default function StationDetailsPage() {
                           onClick={() => setShowVisitSchedule(true)}
                         >
                           {station.status === "committee-assigned" ? "إنشاء زيارة" : "إنشاء زيارة إضافية"}
+                        </Button>
+                      )}
+                      {station.status === "يمكن للمحطة استخراج خطاب تشغيل" && (
+                        <Button 
+                          className="w-full"
+                          variant="secondary"
+                          onClick={() => setShowOperationLetter(true)}
+                        >
+                          <span className="material-icons ml-1 align-middle">description</span>
+                          استخراج خطاب تشغيل
+                        </Button>
+                      )}
+                      {station.status === "تم اعتماد المحطة" && (
+                        <Button 
+                          className="w-full"
+                          variant="secondary"
+                          onClick={() => setShowApprovalCertificate(true)}
+                        >
+                          <span className="material-icons ml-1 align-middle">verified</span>
+                          استخراج شهادة الاعتماد
                         </Button>
                       )}
                     </div>
@@ -606,6 +918,24 @@ export default function StationDetailsPage() {
           onClose={() => setShowVisitSchedule(false)}
           stationId={stationId}
           onSuccess={fetchVisits}
+        />
+      )}
+      
+      {showOperationLetter && (
+        <OperationLetterModal
+          isOpen={showOperationLetter}
+          onClose={() => setShowOperationLetter(false)}
+          stationId={stationId}
+          stationName={station.name}
+        />
+      )}
+      
+      {showApprovalCertificate && (
+        <ApprovalCertificateModal
+          isOpen={showApprovalCertificate}
+          onClose={() => setShowApprovalCertificate(false)}
+          stationId={stationId}
+          stationName={station.name}
         />
       )}
     </div>

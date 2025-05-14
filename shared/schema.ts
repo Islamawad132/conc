@@ -103,6 +103,7 @@ export const stations = pgTable("stations", {
   representativeId: text("representative_id").notNull(),
   qualityManagerName: text("quality_manager_name").notNull(),
   qualityManagerPhone: text("quality_manager_phone").notNull(),
+  quality_manager_id: text("quality_manager_id").notNull(),
   status: text("status", { 
     enum: ["pending-payment", "payment-confirmed", "committee-assigned", "scheduled", "visited", "approved", "pending-documents", 
            "تحت الإختبار", "هناك فشل في بعض التجارب", "يمكن للمحطة استخراج خطاب تشغيل", "تم اعتماد المحطة"] 
@@ -133,7 +134,14 @@ export const insertStationSchema = createInsertSchema(stations, {
   fees: z.union([
     z.number(),
     z.string().transform((val) => parseFloat(val))
-  ]).transform((val) => val.toString())
+  ]).transform((val) => val.toString()),
+  certificateExpiryDate: z.preprocess(
+    (arg) => {
+      if (typeof arg === "string" || arg instanceof Date) return new Date(arg);
+      return null;
+    },
+    z.date().nullable().optional()
+  ),
 }).omit({
   id: true,
   code: true, // Auto-generated

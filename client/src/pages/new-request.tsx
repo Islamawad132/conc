@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -45,6 +45,7 @@ const newRequestSchema = z.object({
   representativeId: z.string().min(1, { message: "يرجى إدخال الرقم القومي للمندوب" }),
   qualityManagerName: z.string().min(1, { message: "يرجى إدخال اسم مدير الجودة بالمحطة" }),
   qualityManagerPhone: z.string().min(1, { message: "يرجى إدخال رقم تليفون مدير الجودة بالمحطة" }),
+  qualityManagerId: z.string().min(1, { message: "يرجى إدخال الرقم القومي لمدير الجودة بالمحطة" }),
   accommodation: z.enum(["station", "center"]).optional(),
 });
 
@@ -120,18 +121,29 @@ export default function NewRequestPage() {
       representativeId: "",
       qualityManagerName: "",
       qualityManagerPhone: "",
+      qualityManagerId: "",
+      accommodation: undefined,
     },
   });
   
+  // Watch values for conditional rendering and calculations
   const distance = form.watch("distance");
   const mixersCount = form.watch("mixersCount");
   const reportLanguage = form.watch("reportLanguage") as ReportLanguage;
   const approvalType = form.watch("approvalType") as ApprovalType;
+  const accommodation = form.watch("accommodation") as AccommodationType | undefined;
   const needsAccommodation = distance > 200;
+
+  // Effect to handle accommodation field when distance changes
+  useEffect(() => {
+    if (distance <= 200) {
+      form.setValue("accommodation", undefined);
+    } else if (!form.getValues("accommodation")) {
+      form.setValue("accommodation", "station");
+    }
+  }, [distance, form]);
   
   const calculateFeesHandler = () => {
-    const accommodation = form.getValues("accommodation") as AccommodationType | undefined;
-    
     const calculatedFees = calculateFees(
       distance,
       mixersCount,
@@ -145,12 +157,11 @@ export default function NewRequestPage() {
   const onSubmit = async (data: FormValues) => {
     try {
       // Calculate total fees
-      const accommodation = form.getValues("accommodation") as AccommodationType | undefined;
       const calculatedFees = calculateFees(
         data.distance,
         data.mixersCount,
         data.reportLanguage,
-        accommodation || null
+        data.accommodation || null
       );
 
       // Make API call to create new station
@@ -168,7 +179,8 @@ export default function NewRequestPage() {
           location: data.latitude && data.longitude ? `${data.latitude},${data.longitude}` : undefined,
           distance: data.distance,
           approvalType: data.approvalType,
-          certificateExpiryDate: data.approvalType === "renewal" ? new Date(data.certificateExpiryDate!).toISOString() : undefined,
+          certificateExpiryDate: data.approvalType === "renewal" && data.certificateExpiryDate ? 
+            new Date(data.certificateExpiryDate).toISOString() : null,
           mixersCount: data.mixersCount,
           maxCapacity: data.maxCapacity.toString(),
           mixingType: data.mixingType,
@@ -178,7 +190,8 @@ export default function NewRequestPage() {
           representativeId: data.representativeId,
           qualityManagerName: data.qualityManagerName,
           qualityManagerPhone: data.qualityManagerPhone,
-          accommodation: data.accommodation,
+          qualityManagerId: data.qualityManagerId,
+          accommodation: data.distance > 200 ? data.accommodation : undefined,
           fees: Math.round(calculatedFees.totalCost),
           createdBy: user?.id,
         }),
@@ -328,52 +341,124 @@ export default function NewRequestPage() {
                       )}
                     />
                     
-                    <FormItem>
+                    <FormItem className="space-y-4">
                       <FormLabel>الموقع الجغرافي للمحطة <span className="text-destructive">*</span></FormLabel>
-                      <div className="flex">
-                        <Input
-                          value={selectedLocation ? `${selectedLocation[0].toFixed(6)}, ${selectedLocation[1].toFixed(6)}` : ""}
-                          placeholder="اضغط لتحديد الموقع على الخريطة"
-                          readOnly
-                          className="ml-2"
-                        />
-                        <Dialog open={showMapDialog} onOpenChange={setShowMapDialog}>
-                          <DialogTrigger asChild>
-                            <Button
-                              type="button"
-                              className="mr-2"
-                            >
-                              تحديد على الخريطة
-                            </Button>
-                          </DialogTrigger>
-                          <DialogContent className="max-w-3xl">
-                            <DialogHeader>
-                              <DialogTitle>تحديد موقع المحطة</DialogTitle>
-                            </DialogHeader>
-                            <div className="mb-4">
-                              <p className="text-sm text-muted-foreground mb-4">
-                                اضغط على الخريطة لتحديد موقع المحطة. سيتم حساب المسافة بين المحطة والمركز تلقائياً.
-                              </p>
-                              <MapPicker
-                                initialLocation={selectedLocation || undefined}
-                                onLocationChange={(lat, lng) => {
-                                  setSelectedLocation([lat, lng]);
-                                  
-                                  // حساب المسافة من المركز
-                                  const distance = calculateDistanceFromCenter(lat, lng);
-                                  
-                                  // تحديث قيم النموذج
-                                  form.setValue("latitude", lat);
-                                  form.setValue("longitude", lng);
-                                  form.setValue("distance", distance);
-                                }}
-                              />
-                            </div>
-                            <div className="flex justify-end">
-                              <Button onClick={() => setShowMapDialog(false)}>تم</Button>
-                            </div>
-                          </DialogContent>
-                        </Dialog>
+                      <div className="space-y-4 rounded-lg border p-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div>
+                            <FormField
+                              control={form.control}
+                              name="latitude"
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel className="text-sm font-medium">خط العرض (Latitude)</FormLabel>
+                                  <FormControl>
+                                    <div className="relative">
+                                      <Input
+                                        type="number"
+                                        step="0.000001"
+                                        placeholder="مثال: 30.123456"
+                                        className="text-left dir-ltr"
+                                        {...field}
+                                        onChange={(e) => {
+                                          const lat = parseFloat(e.target.value);
+                                          field.onChange(lat);
+                                          const lng = form.getValues("longitude");
+                                          if (lat && lng) {
+                                            setSelectedLocation([lat, lng]);
+                                            const distance = calculateDistanceFromCenter(lat, lng);
+                                            form.setValue("distance", distance);
+                                          }
+                                        }}
+                                        value={field.value || ""}
+                                      />
+                                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">°N</span>
+                                    </div>
+                                  </FormControl>
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
+                          </div>
+                          <div>
+                            <FormField
+                              control={form.control}
+                              name="longitude"
+                              render={({ field }) => (
+                                <FormItem>
+                                  <FormLabel className="text-sm font-medium">خط الطول (Longitude)</FormLabel>
+                                  <FormControl>
+                                    <div className="relative">
+                                      <Input
+                                        type="number"
+                                        step="0.000001"
+                                        placeholder="مثال: 31.123456"
+                                        className="text-left dir-ltr"
+                                        {...field}
+                                        onChange={(e) => {
+                                          const lng = parseFloat(e.target.value);
+                                          field.onChange(lng);
+                                          const lat = form.getValues("latitude");
+                                          if (lat && lng) {
+                                            setSelectedLocation([lat, lng]);
+                                            const distance = calculateDistanceFromCenter(lat, lng);
+                                            form.setValue("distance", distance);
+                                          }
+                                        }}
+                                        value={field.value || ""}
+                                      />
+                                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">°E</span>
+                                    </div>
+                                  </FormControl>
+                                  <FormMessage />
+                                </FormItem>
+                              )}
+                            />
+                          </div>
+                        </div>
+                        
+                        <div className="flex flex-col space-y-2">
+                          <Dialog open={showMapDialog} onOpenChange={setShowMapDialog}>
+                            <DialogTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                className="w-full bg-muted/50 hover:bg-muted"
+                              >
+                                <span className="material-icons ml-2">map</span>
+                                تحديد الموقع على الخريطة
+                              </Button>
+                            </DialogTrigger>
+                            <DialogContent className="max-w-3xl">
+                              <DialogHeader>
+                                <DialogTitle>تحديد موقع المحطة</DialogTitle>
+                              </DialogHeader>
+                              <div className="mb-4">
+                                <p className="text-sm text-muted-foreground mb-4">
+                                  اضغط على الخريطة لتحديد موقع المحطة. سيتم حساب المسافة بين المحطة والمركز تلقائياً.
+                                </p>
+                                <MapPicker
+                                  initialLocation={selectedLocation || undefined}
+                                  onLocationChange={(lat, lng) => {
+                                    setSelectedLocation([lat, lng]);
+                                    form.setValue("latitude", lat);
+                                    form.setValue("longitude", lng);
+                                    const distance = calculateDistanceFromCenter(lat, lng);
+                                    form.setValue("distance", distance);
+                                  }}
+                                />
+                              </div>
+                              <div className="flex justify-end">
+                                <Button onClick={() => setShowMapDialog(false)}>تم</Button>
+                              </div>
+                            </DialogContent>
+                          </Dialog>
+                          {selectedLocation && (
+                            <p className="text-sm text-muted-foreground text-center">
+                              تم تحديد الموقع: {selectedLocation[0].toFixed(6)}°N, {selectedLocation[1].toFixed(6)}°E
+                            </p>
+                          )}
+                        </div>
                       </div>
                     </FormItem>
                     
@@ -382,18 +467,14 @@ export default function NewRequestPage() {
                       name="distance"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>المسافة بين المحطة والمركز (كم) <span className="text-destructive">*</span></FormLabel>
+                          <FormLabel>المسافة بين المحطة والمركز (كم)</FormLabel>
                           <FormControl>
                             <Input 
                               type="number" 
                               min="0" 
                               {...field} 
-                              onChange={(e) => {
-                                field.onChange(e);
-                                if (parseInt(e.target.value) <= 200) {
-                                  form.setValue("accommodation", undefined);
-                                }
-                              }}
+                              readOnly
+                              value={selectedLocation ? calculateDistanceFromCenter(selectedLocation[0], selectedLocation[1]) : 0}
                             />
                           </FormControl>
                           <FormMessage />
@@ -590,6 +671,20 @@ export default function NewRequestPage() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>رقم تليفون مدير الجودة بالمحطة <span className="text-destructive">*</span></FormLabel>
+                          <FormControl>
+                            <Input {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    
+                    <FormField
+                      control={form.control}
+                      name="qualityManagerId"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>الرقم القومي لمدير الجودة بالمحطة <span className="text-destructive">*</span></FormLabel>
                           <FormControl>
                             <Input {...field} />
                           </FormControl>

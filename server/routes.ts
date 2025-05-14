@@ -10,7 +10,8 @@ import {
   insertSettingsSchema,
   insertUserSchema,
   type Visit,
-  type Payment
+  type Payment,
+  type Station
 } from "@shared/schema";
 import express from "express";
 import multer from "multer";
@@ -19,8 +20,23 @@ import { WebSocketServer } from "ws";
 import { hashPassword } from "./hash-password";
 import { eq } from "drizzle-orm";
 import { db } from "./db";
+import { requireAuth } from "./auth";
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
 
-const app = express();
+// Import PDFKit using dynamic import
+let PDFDocument: any = null;
+
+// Get current file path and directory in ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Path to fonts
+const ARABIC_FONT_PATH = path.join(__dirname, 'fonts', 'arabic-font.ttf');
+const DEFAULT_FONT_PATH = path.join(__dirname, 'fonts', 'Helvetica.ttf');
+
+// We'll load PDFKit when needed in the endpoint
 
 // Configure multer for file uploads
 const uploadStorage = multer.diskStorage({
@@ -188,21 +204,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
   
-  app.post("/api/stations", async (req, res) => {
+  app.post("/api/stations", requireAuth, async (req, res) => {
     try {
-      // Validate request body
-      const validatedData = insertStationSchema.parse(req.body);
-      
-      // Create station
-      const station = await storage.createStation(validatedData);
-      
-      res.status(201).json(station);
+      const data = insertStationSchema.parse({
+        ...req.body,
+        // Convert maxCapacity to string if it's a number
+        maxCapacity: req.body.maxCapacity.toString(),
+        // Convert distance to string if it's a number
+        distance: req.body.distance.toString(),
+        // Convert fees to string if it's a number
+        fees: req.body.fees.toString(),
+        // Map qualityManagerId to quality_manager_id
+        quality_manager_id: req.body.qualityManagerId,
+      });
+
+      const station = await storage.createStation(data);
+      res.json(station);
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        return res.status(400).json({ message: "Invalid request data", errors: error.errors });
-      }
       console.error("Error creating station:", error);
-      res.status(500).json({ message: "Failed to create station" });
+      if (error instanceof z.ZodError) {
+        res.status(400).json({
+          message: "Invalid request data",
+          errors: error.errors,
+        });
+      } else {
+        res.status(500).json({ message: "Failed to create station" });
+      }
     }
   });
   
@@ -645,10 +672,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const stationId = parseInt(req.params.id);
       const { chairman, engineer, secretary } = req.body;
+      const isAdmin = req.user?.role === "admin";
 
       if (!chairman || !engineer || !secretary) {
         return res.status(400).json({ error: "Missing required fields" });
       }
+
+      // Fetch the station to check if it already has a committee
+      const existingStation = await storage.getStation(stationId);
+      if (!existingStation) {
+        return res.status(404).json({ error: "Station not found" });
+      }
+      
+      const hasExistingCommittee = existingStation.committee && Array.isArray(existingStation.committee) && existingStation.committee.length > 0;
 
       // Fetch committee members from our database
       const [chairmanUser, engineerUser, secretaryUser] = await Promise.all([
@@ -661,30 +697,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ error: "One or more committee members not found" });
       }
 
+      console.log('Committee members found:', {
+        chairman: chairmanUser,
+        engineer: engineerUser,
+        secretary: secretaryUser
+      });
+
       // Create committee array with exact structure as defined in schema
       const committee = [
         { 
           id: parseInt(chairman), 
           name: chairmanUser.name, 
-          role: "chairman" 
+          role: "chairman",
+          phone: chairmanUser.phone || ""
         },
         { 
           id: parseInt(engineer), 
           name: engineerUser.name, 
-          role: "engineer" 
+          role: "engineer",
+          phone: engineerUser.phone || ""
         },
         { 
           id: parseInt(secretary), 
           name: secretaryUser.name, 
-          role: "secretary" 
+          role: "secretary",
+          phone: secretaryUser.phone || ""
         }
       ];
 
+      console.log('Committee to be assigned:', committee);
+
       // Update station with committee and status
-      const station = await storage.updateStation(stationId, {
-        committee,
-        status: "committee-assigned"
-      });
+      // If admin is updating an existing committee, don't change the status
+      const updateData: any = { committee };
+      if (!hasExistingCommittee || !isAdmin) {
+        updateData.status = "committee-assigned";
+      }
+      
+      const station = await storage.updateStation(stationId, updateData);
 
       if (!station) {
         return res.status(404).json({ error: "Station not found" });
@@ -781,6 +831,491 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(204).send();
     } catch (error) {
       res.status(500).json({ message: "Failed to delete mixing type" });
+    }
+  });
+  
+  // Recalculate station status endpoint
+  app.post("/api/stations/:id/recalculate", async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      const station = await storage.getStation(id);
+      
+      if (!station) {
+        return res.status(404).json({ message: "Station not found" });
+      }
+      
+      // Force recalculate station status
+      const updatedStation = await storage.recalculateStationStatus(id);
+      
+      res.json(updatedStation);
+    } catch (error) {
+      console.error("Error recalculating station status:", error);
+      res.status(500).json({ message: "Failed to recalculate station status" });
+    }
+  });
+  
+  // Update committee phone numbers endpoint
+  app.post("/api/stations/:id/update-committee-phones", async (req, res) => {
+    try {
+      if (!req.isAuthenticated() || req.user?.role !== "admin") {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+
+      const id = parseInt(req.params.id);
+      const station = await storage.getStation(id);
+      
+      if (!station) {
+        return res.status(404).json({ message: "Station not found" });
+      }
+
+      // Check if station has committee
+      if (!station.committee || !Array.isArray(station.committee) || station.committee.length === 0) {
+        return res.status(400).json({ message: "Station has no committee assigned" });
+      }
+
+      // Get updated user data for each committee member
+      const updatedCommittee = await Promise.all(
+        station.committee.map(async (member) => {
+          if (!member.id) return member;
+          
+          const user = await storage.getUser(member.id);
+          if (!user) return member;
+          
+          return {
+            ...member,
+            phone: user.phone || ""
+          };
+        })
+      );
+
+      console.log('Updated committee with phones:', updatedCommittee);
+
+      // Update station with committee that includes phone numbers
+      const updatedStation = await storage.updateStation(id, {
+        committee: updatedCommittee
+      });
+      
+      res.json(updatedStation);
+    } catch (error) {
+      console.error("Error updating committee phone numbers:", error);
+      res.status(500).json({ message: "Failed to update committee phone numbers" });
+    }
+  });
+  
+  // Admin utility: Update all stations' committee phone numbers
+  app.post("/api/admin/update-all-committee-phones", async (req, res) => {
+    try {
+      if (!req.isAuthenticated() || req.user?.role !== "admin") {
+        return res.status(403).json({ message: "Forbidden" });
+      }
+
+      // Get all stations
+      const stations = await storage.listStations();
+      
+      // Process stations with committees
+      const results = await Promise.all(
+        stations
+          .filter(station => station.committee && Array.isArray(station.committee) && station.committee.length > 0)
+          .map(async (station) => {
+            try {
+              // Get updated user data for each committee member
+              const updatedCommittee = await Promise.all(
+                (station.committee as Array<{ id?: number; name: string; role: string; phone?: string }>).map(async (member: { id?: number; name: string; role: string; phone?: string }) => {
+                  if (!member.id) return member;
+                  
+                  const user = await storage.getUser(member.id);
+                  if (!user) return member;
+                  
+                  return {
+                    ...member,
+                    phone: user.phone || ""
+                  };
+                })
+              );
+
+              // Update station with committee that includes phone numbers
+              const updatedStation = await storage.updateStation(station.id, {
+                committee: updatedCommittee
+              });
+              
+              return {
+                stationId: station.id,
+                success: true,
+                message: "Updated successfully"
+              };
+            } catch (error) {
+              return {
+                stationId: station.id,
+                success: false,
+                message: error instanceof Error ? error.message : "Unknown error"
+              };
+            }
+          })
+      );
+      
+      res.json({
+        totalProcessed: results.length,
+        successful: results.filter(r => r.success).length,
+        failed: results.filter(r => !r.success).length,
+        details: results
+      });
+    } catch (error) {
+      console.error("Error updating all committee phone numbers:", error);
+      res.status(500).json({ message: "Failed to update committee phone numbers" });
+    }
+  });
+  
+  // Generate operation letter endpoint
+  app.post("/api/stations/:id/generate-operation-letter", async (req, res) => {
+    try {
+      // Get language preference from request body
+      const { language = "ar" } = req.body;
+      
+      // Use HTML templates instead of direct PDF generation
+      const id = parseInt(req.params.id);
+      const station = await storage.getStation(id);
+      
+      if (!station) {
+        return res.status(404).json({ message: "Station not found" });
+      }
+      
+      // Check if station status allows for operation letter
+      if (station.status !== "يمكن للمحطة استخراج خطاب تشغيل") {
+        return res.status(400).json({ message: "Station is not eligible for operation letter" });
+      }
+      
+      // Get all visits for the station
+      const visits = await storage.listVisitsByStation(id);
+      
+      try {
+        // Load HTML-PDF conversion library
+        const htmlPdf = await import('html-pdf');
+        
+        // Read the appropriate template file
+        const templatePath = path.join(__dirname, 'templates', `operation-letter-${language}.html`);
+        let html = fs.readFileSync(templatePath, 'utf8');
+        
+        // Prepare data for template
+        const today = new Date();
+        const dateOptions: Intl.DateTimeFormatOptions = { 
+          year: 'numeric', 
+          month: 'long', 
+          day: 'numeric' 
+        };
+        
+        const dateText = language === "ar" 
+          ? today.toLocaleDateString('ar-EG', dateOptions)
+          : today.toLocaleDateString('en-US', dateOptions);
+          
+        const refNumber = `${station.code}-OL-${today.getFullYear()}`;
+        
+        // Replace placeholders in template
+        html = html.replace(/{{date}}/g, dateText);
+        html = html.replace(/{{refNumber}}/g, refNumber);
+        html = html.replace(/{{station\.code}}/g, station.code);
+        html = html.replace(/{{station\.name}}/g, station.name);
+        html = html.replace(/{{station\.owner}}/g, station.owner);
+        html = html.replace(/{{station\.address}}/g, station.address);
+        
+        // Collect test results
+        const checkItemNames: Record<string, {ar: string, en: string}> = {
+          "scale-calibration": {
+            ar: "معايرة الموازين",
+            en: "Scale Calibration"
+          },
+          "press-calibration": {
+            ar: "معايرة ماكينة اختبار الضغط",
+            en: "Compression Test Machine Calibration"
+          },
+          "uniformity-tests": {
+            ar: "اختبارات التجانس",
+            en: "Uniformity Tests"
+          },
+          "chloride-sulfate-tests": {
+            ar: "اختبارات الكلوريدات والكبريتات",
+            en: "Chloride and Sulfate Tests"
+          },
+          "water-chemical-tests": {
+            ar: "الاختبارات الكيميائية للماء",
+            en: "Water Chemical Tests"
+          },
+          "7day-compression-strength": {
+            ar: "مقاومة الضغط عند 7 أيام",
+            en: "7-Day Compression Strength"
+          },
+          "28day-compression-strength": {
+            ar: "مقاومة الضغط عند 28 يوم",
+            en: "28-Day Compression Strength"
+          }
+        };
+        
+        // Process visits to collect test results
+        const testResults: Record<string, { status: string, date: Date }> = {};
+        
+        for (const visit of visits) {
+          if (visit.checks && Array.isArray(visit.checks)) {
+            for (const check of visit.checks) {
+              // For test 7, always use the most recent result
+              if (check.itemId === "28day-compression-strength") {
+                if (!testResults[check.itemId] || new Date(visit.visitDate) > testResults[check.itemId].date) {
+                  testResults[check.itemId] = {
+                    status: check.status,
+                    date: new Date(visit.visitDate)
+                  };
+                }
+              } 
+              // For other tests, only update if it's from the first visit or previous result was failed
+              else if (visit.visitType === 'first' || 
+                      (testResults[check.itemId] && testResults[check.itemId].status === 'failed')) {
+                testResults[check.itemId] = {
+                  status: check.status,
+                  date: new Date(visit.visitDate)
+                };
+              }
+            }
+          }
+        }
+        
+        // Generate test results HTML
+        let testResultsHtml = '';
+        Object.entries(testResults).forEach(([itemId, result]) => {
+          if (checkItemNames[itemId]) {
+            const testName = language === 'ar' ? checkItemNames[itemId].ar : checkItemNames[itemId].en;
+            
+            const statusText = language === 'ar' 
+              ? (result.status === 'passed' ? 'ناجح' : result.status === 'failed' ? 'فاشل' : 'تحت الاختبار')
+              : (result.status === 'passed' ? 'Passed' : result.status === 'failed' ? 'Failed' : 'Pending');
+              
+            const statusClass = result.status === 'passed' ? 'passed' : 
+                              result.status === 'failed' ? 'failed' : 'pending';
+                              
+            testResultsHtml += `
+            <tr>
+              <td>${testName}</td>
+              <td class="status-${statusClass}">${statusText}</td>
+            </tr>`;
+          }
+        });
+        
+        // Replace test results in template
+        html = html.replace(/{{#each testResults}}[\s\S]*?{{\/each}}/g, testResultsHtml);
+        
+        // Generate committee HTML
+        let committeeHtml = '';
+        
+        // Type-safe handling of committee members
+        interface CommitteeMember {
+          name: string;
+          role: string;
+          phone?: string;
+        }
+        
+        const committee = station.committee as CommitteeMember[] | null | undefined;
+        
+        if (committee && Array.isArray(committee)) {
+          for (const member of committee) {
+            if (member && typeof member === 'object' && 'name' in member && 'role' in member) {
+              const role = String(member.role || '');
+              const roleText = language === 'ar' 
+                ? (role === 'chairman' ? 'رئيس اللجنة' : role === 'engineer' ? 'مهندس' : role === 'secretary' ? 'سكرتير' : role)
+                : (role === 'chairman' ? 'Committee Chairman' : role === 'engineer' ? 'Engineer' : role === 'secretary' ? 'Secretary' : role);
+                
+              committeeHtml += `
+              <tr>
+                <td>${member.name}</td>
+                <td>${roleText}</td>
+              </tr>`;
+            }
+          }
+        }
+        
+        // Replace committee in template
+        html = html.replace(/{{#each committee}}[\s\S]*?{{\/each}}/g, committeeHtml);
+        
+        // Generate PDF from HTML with proper type definition
+        const pdfOptions = {
+          format: 'A4' as const, // Use const assertion for literal type
+          border: {
+            top: '2cm',
+            right: '2cm',
+            bottom: '2cm',
+            left: '2cm'
+          },
+          header: {
+            height: '1cm'
+          },
+          footer: {
+            height: '1cm'
+          }
+        };
+        
+        // Use a Promise to handle the PDF generation
+        const generatePdf = () => {
+          return new Promise((resolve, reject) => {
+            htmlPdf.default.create(html, pdfOptions).toBuffer((err, buffer) => {
+              if (err) {
+                reject(err);
+              } else {
+                resolve(buffer);
+              }
+            });
+          });
+        };
+        
+        // Generate PDF and send response
+        const pdfBuffer = await generatePdf();
+        
+        // Set response headers
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename=operation-letter-${station.code}-${language}.pdf`);
+        
+        // Send PDF buffer
+        res.send(pdfBuffer);
+        
+      } catch (pdfError) {
+        console.error("Error generating PDF from HTML:", pdfError);
+        
+        // Fallback to direct HTML response if PDF generation fails
+        res.setHeader('Content-Type', 'text/html');
+        res.setHeader('Content-Disposition', `attachment; filename=operation-letter-${station.code}-${language}.html`);
+        
+        // Read the appropriate template file
+        const templatePath = path.join(__dirname, 'templates', `operation-letter-${language}.html`);
+        const html = fs.readFileSync(templatePath, 'utf8');
+        
+        res.send(html);
+      }
+      
+    } catch (error) {
+      console.error("Error generating operation letter:", error);
+      res.status(500).json({ message: "Failed to generate operation letter" });
+    }
+  });
+  
+  // Generate approval certificate endpoint
+  app.post("/api/stations/:id/generate-approval-certificate", async (req, res) => {
+    try {
+      // Get language preference from request body (currently only Arabic is supported)
+      const { language = "ar" } = req.body;
+      
+      // Use HTML templates for PDF generation
+      const id = parseInt(req.params.id);
+      const station = await storage.getStation(id);
+      
+      if (!station) {
+        return res.status(404).json({ message: "Station not found" });
+      }
+      
+      // Check if station status allows for approval certificate
+      if (station.status !== "تم اعتماد المحطة") {
+        return res.status(400).json({ message: "Station is not eligible for approval certificate" });
+      }
+      
+      try {
+        // Load HTML-PDF conversion library
+        const htmlPdf = await import('html-pdf');
+        
+        // Read the template file (currently only Arabic is supported)
+        const templatePath = path.join(__dirname, 'templates', `approval-certificate-ar.html`);
+        let html = fs.readFileSync(templatePath, 'utf8');
+        
+        // Prepare data for template
+        const today = new Date();
+        const approvalStartDate = station.approvalStartDate ? new Date(station.approvalStartDate) : today;
+        const approvalEndDate = station.approvalEndDate ? new Date(station.approvalEndDate) : 
+          new Date(approvalStartDate.getFullYear() + 1, approvalStartDate.getMonth(), approvalStartDate.getDate());
+        
+        const dateOptions: Intl.DateTimeFormatOptions = { 
+          year: 'numeric', 
+          month: 'long', 
+          day: 'numeric' 
+        };
+        
+        const issueDateText = approvalStartDate.toLocaleDateString('ar-EG', dateOptions);
+        const expiryDateText = approvalEndDate.toLocaleDateString('ar-EG', dateOptions);
+        
+        // Generate certificate number
+        const certificateNumber = `${station.code}-AC-${today.getFullYear()}`;
+        
+        // Replace placeholders in template
+        html = html.replace(/{{certificateNumber}}/g, certificateNumber);
+        html = html.replace(/{{issueDate}}/g, issueDateText);
+        html = html.replace(/{{expiryDate}}/g, expiryDateText);
+        html = html.replace(/{{station\.code}}/g, station.code);
+        html = html.replace(/{{station\.name}}/g, station.name);
+        html = html.replace(/{{station\.owner}}/g, station.owner);
+        html = html.replace(/{{station\.taxNumber}}/g, station.taxNumber);
+        html = html.replace(/{{station\.address}}/g, station.address);
+        html = html.replace(/{{station\.cityDistrict}}/g, station.cityDistrict);
+        html = html.replace(/{{station\.mixersCount}}/g, station.mixersCount.toString());
+        html = html.replace(/{{station\.maxCapacity}}/g, station.maxCapacity.toString());
+        
+        // Mixing type translation
+        const mixingTypeText = station.mixingType === "normal" ? "خلط رطب" : "خلط جاف";
+        html = html.replace(/{{mixingTypeText}}/g, mixingTypeText);
+        
+        // Add signature information (you may want to replace these with actual data from your system)
+        html = html.replace(/{{approvalManagerName}}/g, "د. محمد عبدالله");
+        html = html.replace(/{{centerDirectorName}}/g, "أ.د. خالد الذهبي");
+        html = html.replace(/{{contactPhone}}/g, "01234567890");
+        
+        // Generate PDF from HTML
+        const pdfOptions = {
+          format: 'A4' as const,
+          border: {
+            top: '1cm',
+            right: '1cm',
+            bottom: '1cm',
+            left: '1cm'
+          },
+          header: {
+            height: '0.5cm'
+          },
+          footer: {
+            height: '0.5cm'
+          }
+        };
+        
+        // Use a Promise to handle the PDF generation
+        const generatePdf = () => {
+          return new Promise((resolve, reject) => {
+            htmlPdf.default.create(html, pdfOptions).toBuffer((err, buffer) => {
+              if (err) {
+                reject(err);
+              } else {
+                resolve(buffer);
+              }
+            });
+          });
+        };
+        
+        // Generate PDF and send response
+        const pdfBuffer = await generatePdf();
+        
+        // Set response headers
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename=approval-certificate-${station.code}.pdf`);
+        
+        // Send PDF buffer
+        res.send(pdfBuffer);
+        
+      } catch (pdfError) {
+        console.error("Error generating PDF from HTML:", pdfError);
+        
+        // Fallback to direct HTML response if PDF generation fails
+        res.setHeader('Content-Type', 'text/html');
+        res.setHeader('Content-Disposition', `attachment; filename=approval-certificate-${station.code}.html`);
+        
+        // Read the template file
+        const templatePath = path.join(__dirname, 'templates', `approval-certificate-ar.html`);
+        const html = fs.readFileSync(templatePath, 'utf8');
+        
+        res.send(html);
+      }
+      
+    } catch (error) {
+      console.error("Error generating approval certificate:", error);
+      res.status(500).json({ message: "Failed to generate approval certificate" });
     }
   });
   

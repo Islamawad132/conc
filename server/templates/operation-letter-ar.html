@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>خطاب تشغيل محطة خلط خرسانة</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 2cm;
+    }
+    body {
+      font-family: Arial, sans-serif;
+      line-height: 1.6;
+      color: #333;
+      direction: rtl;
+      margin: 0;
+      padding: 0;
+      background-color: white;
+    }
+    .container {
+      border: 2px solid #0066cc;
+      padding: 20px;
+      position: relative;
+      height: 100%;
+    }
+    .header {
+      background-color: #f0f7ff;
+      border-bottom: 2px solid #0066cc;
+      padding: 20px;
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .header h1 {
+      color: #003366;
+      margin: 0;
+      font-size: 24px;
+    }
+    .header h2 {
+      color: #0066cc;
+      margin: 10px 0 0;
+      font-size: 16px;
+    }
+    .date-section {
+      background-color: #f9f9f9;
+      border: 1px solid #cccccc;
+      padding: 10px;
+      margin-bottom: 15px;
+      text-align: right;
+    }
+    .ref-number {
+      background-color: #f9f9f9;
+      border: 1px solid #cccccc;
+      padding: 10px;
+      margin-bottom: 20px;
+      text-align: right;
+    }
+    .station-info {
+      background-color: #f9f9f9;
+      border: 1px solid #0066cc;
+      padding: 15px;
+      margin-bottom: 20px;
+    }
+    .station-info h3 {
+      color: #0066cc;
+      text-align: center;
+      margin-top: 0;
+      margin-bottom: 15px;
+    }
+    .info-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .info-item {
+      display: flex;
+      justify-content: space-between;
+    }
+    .info-label {
+      font-weight: bold;
+    }
+    .section-header {
+      background-color: #e6f2ff;
+      border: 1px solid #0066cc;
+      padding: 10px;
+      margin-bottom: 15px;
+      color: #0066cc;
+      font-size: 18px;
+      text-align: right;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 20px;
+    }
+    th {
+      background-color: #e6e6e6;
+      border: 1px solid #666666;
+      padding: 8px;
+      text-align: right;
+    }
+    td {
+      border: 1px solid #cccccc;
+      padding: 8px;
+      text-align: right;
+    }
+    tr:nth-child(even) {
+      background-color: #f9f9f9;
+    }
+    .status-passed {
+      color: #008800;
+    }
+    .status-failed {
+      color: #cc0000;
+    }
+    .status-pending {
+      color: #888888;
+    }
+    .conclusion {
+      background-color: #f0f7ff;
+      border: 1px solid #0066cc;
+      padding: 15px;
+      margin: 20px 0;
+      color: #003366;
+      font-size: 16px;
+      text-align: right;
+    }
+    .signature {
+      margin-top: 50px;
+      text-align: right;
+    }
+    .signature-line {
+      border-top: 1px solid #000;
+      width: 200px;
+      display: inline-block;
+      margin-top: 40px;
+    }
+    .footer {
+      position: absolute;
+      bottom: 20px;
+      left: 0;
+      right: 0;
+      text-align: center;
+      font-size: 12px;
+      color: #666;
+    }
+    .logo {
+      text-align: center;
+      margin-bottom: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="logo">
+        <!-- Logo placeholder -->
+        <svg width="80" height="80" viewBox="0 0 80 80">
+          <circle cx="40" cy="40" r="38" fill="#f0f7ff" stroke="#0066cc" stroke-width="2"/>
+          <text x="40" y="45" font-family="Arial" font-size="12" text-anchor="middle" fill="#0066cc">LOGO</text>
+        </svg>
+      </div>
+      <h1>خطاب تشغيل محطة خلط خرسانة</h1>
+      <h2>المركز القومي لبحوث الإسكان والبناء</h2>
+    </div>
+
+    <div class="date-section">
+      <span class="info-label">التاريخ:</span> {{date}}
+    </div>
+
+    <div class="ref-number">
+      <span class="info-label">رقم المرجع:</span> {{refNumber}}
+    </div>
+
+    <div class="station-info">
+      <h3>بيانات المحطة</h3>
+      <div class="info-grid">
+        <div class="info-item">
+          <span class="info-label">كود المحطة:</span>
+          <span>{{station.code}}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">اسم المحطة:</span>
+          <span>{{station.name}}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">المالك:</span>
+          <span>{{station.owner}}</span>
+        </div>
+        <div class="info-item">
+          <span class="info-label">العنوان:</span>
+          <span>{{station.address}}</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-header">نتائج الاختبارات</div>
+    <table>
+      <thead>
+        <tr>
+          <th>الاختبار</th>
+          <th>النتيجة</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{#each testResults}}
+        <tr>
+          <td>{{name}}</td>
+          <td class="status-{{statusClass}}">{{statusText}}</td>
+        </tr>
+        {{/each}}
+      </tbody>
+    </table>
+
+    <div class="section-header">اللجنة المسؤولة</div>
+    <table>
+      <thead>
+        <tr>
+          <th>الاسم</th>
+          <th>الدور</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{#each committee}}
+        <tr>
+          <td>{{name}}</td>
+          <td>{{roleText}}</td>
+        </tr>
+        {{/each}}
+      </tbody>
+    </table>
+
+    <div class="conclusion">
+      بناءً على نتائج الاختبارات المذكورة أعلاه، يمكن للمحطة البدء في التشغيل مع استكمال اختبار مقاومة الضغط عند 28 يوم.
+    </div>
+
+    <div class="signature">
+      <div>توقيع رئيس اللجنة:</div>
+      <div class="signature-line"></div>
+    </div>
+
+    <div class="footer">
+      صفحة 1 من 1 | تم إصدار هذا الخطاب بتاريخ {{date}}
+    </div>
+  </div>
+</body>
+</html> 

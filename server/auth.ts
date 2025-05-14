@@ -6,6 +6,7 @@ import { scrypt, randomBytes, timingSafeEqual } from "crypto";
 import { promisify } from "util";
 import { storage } from "./storage";
 import { User as SelectUser } from "@shared/schema";
+import { Request, Response, NextFunction } from "express";
 
 declare global {
   namespace Express {
@@ -164,4 +165,11 @@ export function setupAuth(app: Express) {
     
     next();
   });
+}
+
+export function requireAuth(req: Request, res: Response, next: NextFunction) {
+  if (!req.isAuthenticated()) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+  next();
 }
